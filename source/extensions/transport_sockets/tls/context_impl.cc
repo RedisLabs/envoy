@@ -186,6 +186,11 @@ ContextImpl::ContextImpl(Stats::Scope& scope, const Envoy::Ssl::ContextConfig& c
       if (has_crl) {
         X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL);
       }
+
+      // RED-48113: Set a default of partial chain verification
+      ENVOY_LOG_MISC(info, "Applying X509_V_FLAG_PARTIAL_CHAIN on TLS contexts");
+      X509_STORE_set_flags(store, X509_V_FLAG_PARTIAL_CHAIN);
+
       verify_mode = SSL_VERIFY_PEER;
       verify_trusted_ca_ = true;
 
