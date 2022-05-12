@@ -5,10 +5,9 @@
 #include "envoy/data/tap/v3/http.pb.h"
 #include "envoy/http/header_map.h"
 
-#include "common/common/logger.h"
-
-#include "extensions/common/tap/tap_config_base.h"
-#include "extensions/filters/http/tap/tap_config.h"
+#include "source/common/common/logger.h"
+#include "source/extensions/common/tap/tap_config_base.h"
+#include "source/extensions/filters/http/tap/tap_config.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -19,7 +18,7 @@ class HttpTapConfigImpl : public Extensions::Common::Tap::TapConfigBaseImpl,
                           public HttpTapConfig,
                           public std::enable_shared_from_this<HttpTapConfigImpl> {
 public:
-  HttpTapConfigImpl(envoy::config::tap::v3::TapConfig&& proto_config,
+  HttpTapConfigImpl(const envoy::config::tap::v3::TapConfig& proto_config,
                     Extensions::Common::Tap::Sink* admin_streamer);
 
   // TapFilter::HttpTapConfig

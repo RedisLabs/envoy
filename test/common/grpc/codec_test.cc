@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 
-#include "common/buffer/buffer_impl.h"
-#include "common/grpc/codec.h"
+#include "source/common/buffer/buffer_impl.h"
+#include "source/common/grpc/codec.h"
 
 #include "test/common/buffer/utility.h"
 #include "test/proto/helloworld.pb.h"
@@ -104,6 +104,57 @@ TEST(GrpcCodecTest, decodeInvalidFrame) {
   Decoder decoder;
   EXPECT_FALSE(decoder.decode(buffer, frames));
   EXPECT_EQ(size, buffer.length());
+}
+
+// This test shows that null bytes in the bytestring successfully decode into a frame with length 0.
+// Should this test really pass?
+TEST(GrpcCodecTest, DecodeMultipleFramesInvalid) {
+  // A frame constructed from null bytes followed by an invalid frame
+  const std::string data("\000\000\000\000\0000000", 9);
+  Buffer::OwnedImpl buffer(data.data(), data.size());
+
+  size_t size = buffer.length();
+
+  std::vector<Frame> frames;
+  Decoder decoder;
+  EXPECT_FALSE(decoder.decode(buffer, frames));
+  // When the decoder doesn't successfully decode, it puts decoded frames up until
+  // an invalid frame into output frame vector.
+  EXPECT_EQ(1, frames.size());
+  // Buffer does not get drained due to it returning false.
+  EXPECT_EQ(size, buffer.length());
+  // Only part of the buffer represented a frame. Thus, the frame length should not equal the buffer
+  // length. The frame put into the output vector has no length.
+  EXPECT_EQ(0, frames[0].length_);
+}
+
+// If there is a valid frame followed by an invalid frame, the decoder will successfully put the
+// valid frame in the output and return false due to the invalid frame
+TEST(GrpcCodecTest, DecodeValidFrameWithInvalidFrameAfterward) {
+  // Decode a valid encoded structured request plus invalid data afterward
+  helloworld::HelloRequest request;
+  request.set_name("hello");
+
+  Buffer::OwnedImpl buffer;
+  std::array<uint8_t, 5> header;
+  Encoder encoder;
+  encoder.newFrame(GRPC_FH_DEFAULT, request.ByteSize(), header);
+  buffer.add(header.data(), 5);
+  buffer.add(request.SerializeAsString());
+  buffer.add("000000", 6);
+  size_t size = buffer.length();
+
+  std::vector<Frame> frames;
+  Decoder decoder;
+  EXPECT_FALSE(decoder.decode(buffer, frames));
+  // When the decoder doesn't successfully decode, it puts valid frames up until
+  // an invalid frame into output frame vector.
+  EXPECT_EQ(1, frames.size());
+  // Buffer does not get drained due to it returning false.
+  EXPECT_EQ(size, buffer.length());
+  // Only part of the buffer represented a valid frame. Thus, the frame length should not equal the
+  // buffer length.
+  EXPECT_NE(size, frames[0].length_);
 }
 
 TEST(GrpcCodecTest, decodeEmptyFrame) {

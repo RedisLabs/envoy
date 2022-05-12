@@ -5,10 +5,9 @@
 #include "envoy/network/filter.h"
 #include "envoy/stats/stats_macros.h"
 
-#include "common/common/logger.h"
-
-#include "extensions/filters/common/rbac/engine_impl.h"
-#include "extensions/filters/common/rbac/utility.h"
+#include "source/common/common/logger.h"
+#include "source/extensions/filters/common/rbac/engine_impl.h"
+#include "source/extensions/filters/common/rbac/utility.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -28,9 +27,18 @@ struct Result {
 class RoleBasedAccessControlFilterConfig {
 public:
   RoleBasedAccessControlFilterConfig(
-      const envoy::extensions::filters::network::rbac::v3::RBAC& proto_config, Stats::Scope& scope);
+      const envoy::extensions::filters::network::rbac::v3::RBAC& proto_config, Stats::Scope& scope,
+      ProtobufMessage::ValidationVisitor& validation_visitor);
 
   Filters::Common::RBAC::RoleBasedAccessControlFilterStats& stats() { return stats_; }
+  std::string shadowEffectivePolicyIdField() const {
+    return shadow_rules_stat_prefix_ +
+           Filters::Common::RBAC::DynamicMetadataKeysSingleton::get().ShadowEffectivePolicyIdField;
+  }
+  std::string shadowEngineResultField() const {
+    return shadow_rules_stat_prefix_ +
+           Filters::Common::RBAC::DynamicMetadataKeysSingleton::get().ShadowEngineResultField;
+  }
 
   const Filters::Common::RBAC::RoleBasedAccessControlEngineImpl*
   engine(Filters::Common::RBAC::EnforcementMode mode) const {
@@ -44,9 +52,10 @@ public:
 
 private:
   Filters::Common::RBAC::RoleBasedAccessControlFilterStats stats_;
+  const std::string shadow_rules_stat_prefix_;
 
-  std::unique_ptr<Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> engine_;
-  std::unique_ptr<Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> shadow_engine_;
+  std::unique_ptr<const Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> engine_;
+  std::unique_ptr<const Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> shadow_engine_;
   const envoy::extensions::filters::network::rbac::v3::RBAC::EnforcementType enforcement_type_;
 };
 

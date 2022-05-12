@@ -1,9 +1,17 @@
 licenses(["notice"])  # Apache 2
 
 exports_files([
-    "VERSION",
+    "VERSION.txt",
+    "API_VERSION.txt",
     ".clang-format",
+    "pytest.ini",
+    ".coveragerc",
 ])
+
+alias(
+    name = "envoy",
+    actual = "//source/exe:envoy",
+)
 
 # These two definitions exist to help reduce Envoy upstream core code depending on extensions.
 # To avoid visibility problems, see notes in source/extensions/extensions_build_config.bzl
@@ -19,6 +27,8 @@ package_group(
         "//test/extensions/...",
         "//test/server",
         "//test/server/config_validation",
+        "//test/tools/schema_validator/...",
+        "//tools/extensions/...",
     ],
 )
 
@@ -27,5 +37,19 @@ package_group(
     packages = [
         "//source/extensions/...",
         "//test/extensions/...",
+    ],
+)
+
+package_group(
+    name = "contrib_library",
+    packages = [
+        "//contrib/...",
+    ],
+)
+
+package_group(
+    name = "examples_library",
+    packages = [
+        "//examples/...",
     ],
 )

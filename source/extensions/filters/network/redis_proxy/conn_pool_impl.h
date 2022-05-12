@@ -12,22 +12,20 @@
 #include "envoy/thread_local/thread_local.h"
 #include "envoy/upstream/cluster_manager.h"
 
-#include "common/buffer/buffer_impl.h"
-#include "common/network/address_impl.h"
-#include "common/network/filter_impl.h"
-#include "common/protobuf/utility.h"
-#include "common/singleton/const_singleton.h"
-#include "common/upstream/load_balancer_impl.h"
-#include "common/upstream/upstream_impl.h"
-
+#include "source/common/buffer/buffer_impl.h"
+#include "source/common/network/address_impl.h"
+#include "source/common/network/filter_impl.h"
+#include "source/common/protobuf/utility.h"
+#include "source/common/singleton/const_singleton.h"
+#include "source/common/upstream/load_balancer_impl.h"
+#include "source/common/upstream/upstream_impl.h"
 #include "source/extensions/clusters/redis/redis_cluster_lb.h"
-
-#include "extensions/common/redis/cluster_refresh_manager.h"
-#include "extensions/filters/network/common/redis/client.h"
-#include "extensions/filters/network/common/redis/client_impl.h"
-#include "extensions/filters/network/common/redis/codec_impl.h"
-#include "extensions/filters/network/common/redis/utility.h"
-#include "extensions/filters/network/redis_proxy/conn_pool.h"
+#include "source/extensions/common/redis/cluster_refresh_manager.h"
+#include "source/extensions/filters/network/common/redis/client.h"
+#include "source/extensions/filters/network/common/redis/client_impl.h"
+#include "source/extensions/filters/network/common/redis/codec_impl.h"
+#include "source/extensions/filters/network/common/redis/utility.h"
+#include "source/extensions/filters/network/redis_proxy/conn_pool.h"
 
 #include "absl/container/node_hash_map.h"
 
@@ -61,7 +59,7 @@ public:
       Common::Redis::Client::ClientFactory& client_factory, ThreadLocal::SlotAllocator& tls,
       const envoy::extensions::filters::network::redis_proxy::v3::RedisProxy::ConnPoolSettings&
           config,
-      Api::Api& api, Stats::ScopePtr&& stats_scope,
+      Api::Api& api, Stats::ScopeSharedPtr&& stats_scope,
       const Common::Redis::RedisCommandStatsSharedPtr& redis_command_stats,
       Extensions::Common::Redis::ClusterRefreshManagerSharedPtr refresh_manager);
   // RedisProxy::ConnPool::Instance
@@ -126,7 +124,8 @@ private:
   };
 
   struct ThreadLocalPool : public ThreadLocal::ThreadLocalObject,
-                           public Upstream::ClusterUpdateCallbacks {
+                           public Upstream::ClusterUpdateCallbacks,
+                           public Logger::Loggable<Logger::Id::redis> {
     ThreadLocalPool(std::shared_ptr<InstanceImpl> parent, Event::Dispatcher& dispatcher,
                     std::string cluster_name);
     ~ThreadLocalPool() override;
@@ -156,7 +155,7 @@ private:
     Upstream::ClusterUpdateCallbacksHandlePtr cluster_update_handle_;
     Upstream::ThreadLocalCluster* cluster_{};
     absl::node_hash_map<Upstream::HostConstSharedPtr, ThreadLocalActiveClientPtr> client_map_;
-    Envoy::Common::CallbackHandle* host_set_member_update_cb_handle_{};
+    Envoy::Common::CallbackHandlePtr host_set_member_update_cb_handle_;
     absl::node_hash_map<std::string, Upstream::HostConstSharedPtr> host_address_map_;
     std::string auth_username_;
     std::string auth_password_;

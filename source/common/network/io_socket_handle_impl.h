@@ -6,8 +6,8 @@
 #include "envoy/event/dispatcher.h"
 #include "envoy/network/io_handle.h"
 
-#include "common/common/logger.h"
-#include "common/network/io_socket_error_impl.h"
+#include "source/common/common/logger.h"
+#include "source/common/network/io_socket_error_impl.h"
 
 namespace Envoy {
 namespace Network {
@@ -33,7 +33,8 @@ public:
 
   Api::IoCallUint64Result readv(uint64_t max_length, Buffer::RawSlice* slices,
                                 uint64_t num_slice) override;
-  Api::IoCallUint64Result read(Buffer::Instance& buffer, uint64_t max_length) override;
+  Api::IoCallUint64Result read(Buffer::Instance& buffer,
+                               absl::optional<uint64_t> max_length) override;
 
   Api::IoCallUint64Result writev(const Buffer::RawSlice* slices, uint64_t num_slice) override;
 
@@ -60,22 +61,35 @@ public:
   Api::SysCallIntResult setOption(int level, int optname, const void* optval,
                                   socklen_t optlen) override;
   Api::SysCallIntResult getOption(int level, int optname, void* optval, socklen_t* optlen) override;
+  Api::SysCallIntResult ioctl(unsigned long control_code, void* in_buffer,
+                              unsigned long in_buffer_len, void* out_buffer,
+                              unsigned long out_buffer_len, unsigned long* bytes_returned) override;
   Api::SysCallIntResult setBlocking(bool blocking) override;
   absl::optional<int> domain() override;
   Address::InstanceConstSharedPtr localAddress() override;
   Address::InstanceConstSharedPtr peerAddress() override;
-  Event::FileEventPtr createFileEvent(Event::Dispatcher& dispatcher, Event::FileReadyCb cb,
-                                      Event::FileTriggerType trigger, uint32_t events) override;
+  void initializeFileEvent(Event::Dispatcher& dispatcher, Event::FileReadyCb cb,
+                           Event::FileTriggerType trigger, uint32_t events) override;
+
+  IoHandlePtr duplicate() override;
+
+  void activateFileEvents(uint32_t events) override;
+  void enableFileEvents(uint32_t events) override;
+
+  void resetFileEvents() override { file_event_.reset(); }
+
   Api::SysCallIntResult shutdown(int how) override;
   absl::optional<std::chrono::milliseconds> lastRoundTripTime() override;
+  absl::optional<uint64_t> congestionWindowInBytes() const override;
+  absl::optional<std::string> interfaceName() override;
 
 protected:
   // Converts a SysCallSizeResult to IoCallUint64Result.
   template <typename T>
   Api::IoCallUint64Result sysCallResultToIoCallResult(const Api::SysCallResult<T>& result) {
-    if (result.rc_ >= 0) {
+    if (result.return_value_ >= 0) {
       // Return nullptr as IoError upon success.
-      return Api::IoCallUint64Result(result.rc_,
+      return Api::IoCallUint64Result(result.return_value_,
                                      Api::IoErrorPtr(nullptr, IoSocketError::deleteIoError));
     }
     RELEASE_ASSERT(result.errno_ != SOCKET_ERROR_INVAL, "Invalid argument passed in.");
@@ -91,6 +105,7 @@ protected:
   os_fd_t fd_;
   int socket_v6only_{false};
   const absl::optional<int> domain_;
+  Event::FileEventPtr file_event_{nullptr};
 
   // The minimum cmsg buffer size to filled in destination address, packets dropped and gso
   // size when receiving a packet. It is possible for a received packet to contain both IPv4

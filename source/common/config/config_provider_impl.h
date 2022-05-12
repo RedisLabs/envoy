@@ -8,13 +8,13 @@
 #include "envoy/singleton/instance.h"
 #include "envoy/thread_local/thread_local.h"
 
-#include "common/common/thread.h"
-#include "common/common/utility.h"
-#include "common/config/utility.h"
-#include "common/init/manager_impl.h"
-#include "common/init/target_impl.h"
-#include "common/init/watcher_impl.h"
-#include "common/protobuf/protobuf.h"
+#include "source/common/common/thread.h"
+#include "source/common/common/utility.h"
+#include "source/common/config/utility.h"
+#include "source/common/init/manager_impl.h"
+#include "source/common/init/target_impl.h"
+#include "source/common/init/watcher_impl.h"
+#include "source/common/protobuf/protobuf.h"
 
 namespace Envoy {
 namespace Config {
@@ -35,7 +35,7 @@ namespace Config {
 // and/or stream/request (if required by the configuration being processed).
 //
 // Dynamic configuration is distributed via xDS APIs (see
-// https://github.com/envoyproxy/data-plane-api/blob/master/xds_protocol.rst). The framework exposed
+// https://github.com/envoyproxy/data-plane-api/blob/main/xds_protocol.rst). The framework exposed
 // by these classes simplifies creation of client xDS implementations following a shared ownership
 // model, where according to the config source specification, a config subscription, config protos
 // received over the subscription and the subsequent config "implementation" (i.e., data structures
@@ -166,9 +166,7 @@ public:
 
   const absl::optional<LastConfigInfo>& configInfo() const { return config_info_; }
 
-  ConfigProvider::ConfigConstSharedPtr getConfig() const {
-    return tls_->getTyped<ThreadLocalConfig>().config_;
-  }
+  ConfigProvider::ConfigConstSharedPtr getConfig() { return tls_->config_; }
 
   /**
    * Must be called by derived classes when the onConfigUpdate() callback associated with the
@@ -199,7 +197,7 @@ protected:
   ConfigSubscriptionCommonBase(const std::string& name, const uint64_t manager_identifier,
                                ConfigProviderManagerImplBase& config_provider_manager,
                                Server::Configuration::ServerFactoryContext& factory_context)
-      : name_(name), tls_(factory_context.threadLocal().allocateSlot()),
+      : name_(name), tls_(factory_context.threadLocal()),
         local_init_target_(
             fmt::format("ConfigSubscriptionCommonBase local init target '{}'", name_),
             [this]() { start(); }),
@@ -234,7 +232,7 @@ protected:
   absl::optional<LastConfigInfo> config_info_;
   // This slot holds a Config implementation in each thread, which is intended to be shared between
   // config providers from the same config source.
-  ThreadLocal::SlotPtr tls_;
+  ThreadLocal::TypedSlot<ThreadLocalConfig> tls_;
 
 private:
   // Local init target which signals first RPC interaction with management server.
@@ -283,7 +281,7 @@ public:
    * with the underlying subscription, shared across all providers and workers.
    */
   void initialize(const ConfigProvider::ConfigConstSharedPtr& initial_config) {
-    tls_->set([initial_config](Event::Dispatcher&) -> ThreadLocal::ThreadLocalObjectSharedPtr {
+    tls_.set([initial_config](Event::Dispatcher&) {
       return std::make_shared<ThreadLocalConfig>(initial_config);
     });
   }
@@ -328,9 +326,8 @@ protected:
    * underlying subscription for each worker thread.
    */
   void initialize(const std::function<ConfigProvider::ConfigConstSharedPtr()>& init_cb) {
-    tls_->set([init_cb](Event::Dispatcher&) -> ThreadLocal::ThreadLocalObjectSharedPtr {
-      return std::make_shared<ThreadLocalConfig>(init_cb());
-    });
+    tls_.set(
+        [init_cb](Event::Dispatcher&) { return std::make_shared<ThreadLocalConfig>(init_cb()); });
   }
 };
 
@@ -386,7 +383,8 @@ public:
    * @return ProtobufTypes::MessagePtr the config dump proto corresponding to the associated
    *                                   config providers.
    */
-  virtual ProtobufTypes::MessagePtr dumpConfigs() const PURE;
+  virtual ProtobufTypes::MessagePtr
+  dumpConfigs(const Matchers::StringMatcher& name_matcher) const PURE;
 
 protected:
   // Ordered set for deterministic config dump output.

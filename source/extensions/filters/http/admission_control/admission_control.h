@@ -6,7 +6,7 @@
 
 #include "envoy/common/random_generator.h"
 #include "envoy/common/time.h"
-#include "envoy/extensions/filters/http/admission_control/v3alpha/admission_control.pb.h"
+#include "envoy/extensions/filters/http/admission_control/v3/admission_control.pb.h"
 #include "envoy/http/codes.h"
 #include "envoy/http/filter.h"
 #include "envoy/runtime/runtime.h"
@@ -14,16 +14,15 @@
 #include "envoy/stats/scope.h"
 #include "envoy/stats/stats_macros.h"
 
-#include "common/common/cleanup.h"
-#include "common/common/logger.h"
-#include "common/grpc/common.h"
-#include "common/grpc/status.h"
-#include "common/http/codes.h"
-#include "common/runtime/runtime_protos.h"
-
-#include "extensions/filters/http/admission_control/evaluators/response_evaluator.h"
-#include "extensions/filters/http/admission_control/thread_local_controller.h"
-#include "extensions/filters/http/common/pass_through_filter.h"
+#include "source/common/common/cleanup.h"
+#include "source/common/common/logger.h"
+#include "source/common/grpc/common.h"
+#include "source/common/grpc/status.h"
+#include "source/common/http/codes.h"
+#include "source/common/runtime/runtime_protos.h"
+#include "source/extensions/filters/http/admission_control/evaluators/response_evaluator.h"
+#include "source/extensions/filters/http/admission_control/thread_local_controller.h"
+#include "source/extensions/filters/http/common/pass_through_filter.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -46,7 +45,7 @@ struct AdmissionControlStats {
 };
 
 using AdmissionControlProto =
-    envoy::extensions::filters::http::admission_control::v3alpha::AdmissionControl;
+    envoy::extensions::filters::http::admission_control::v3::AdmissionControl;
 
 /**
  * Configuration for the admission control filter.
@@ -55,28 +54,30 @@ class AdmissionControlFilterConfig {
 public:
   AdmissionControlFilterConfig(const AdmissionControlProto& proto_config, Runtime::Loader& runtime,
                                Random::RandomGenerator& random, Stats::Scope& scope,
-                               ThreadLocal::SlotPtr&& tls,
+                               ThreadLocal::TypedSlotPtr<ThreadLocalControllerImpl>&& tls,
                                std::shared_ptr<ResponseEvaluator> response_evaluator);
   virtual ~AdmissionControlFilterConfig() = default;
 
-  virtual ThreadLocalController& getController() const {
-    return tls_->getTyped<ThreadLocalControllerImpl>();
-  }
+  virtual ThreadLocalController& getController() const { return **tls_; }
 
   Random::RandomGenerator& random() const { return random_; }
   bool filterEnabled() const { return admission_control_feature_.enabled(); }
   Stats::Scope& scope() const { return scope_; }
   double aggression() const;
   double successRateThreshold() const;
+  uint32_t rpsThreshold() const;
+  double maxRejectionProbability() const;
   ResponseEvaluator& responseEvaluator() const { return *response_evaluator_; }
 
 private:
   Random::RandomGenerator& random_;
   Stats::Scope& scope_;
-  const ThreadLocal::SlotPtr tls_;
+  const ThreadLocal::TypedSlotPtr<ThreadLocalControllerImpl> tls_;
   Runtime::FeatureFlag admission_control_feature_;
   std::unique_ptr<Runtime::Double> aggression_;
   std::unique_ptr<Runtime::Percentage> sr_threshold_;
+  std::unique_ptr<Runtime::UInt32> rps_threshold_;
+  std::unique_ptr<Runtime::Percentage> max_rejection_probability_;
   std::shared_ptr<ResponseEvaluator> response_evaluator_;
 };
 

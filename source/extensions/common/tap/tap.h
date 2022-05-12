@@ -5,7 +5,7 @@
 #include "envoy/data/tap/v3/wrapper.pb.h"
 #include "envoy/http/header_map.h"
 
-#include "extensions/common/matcher/matcher.h"
+#include "source/extensions/common/matcher/matcher.h"
 
 #include "absl/strings/string_view.h"
 
@@ -68,8 +68,11 @@ public:
   /**
    * Create a per tap sink handle for use in submitting either buffered traces or trace segments.
    * @param trace_id supplies a locally unique trace ID. Some sinks use this for output generation.
+   * @param type     Indicates the type of Sink specified in request body
    */
-  virtual PerTapSinkHandlePtr createPerTapSinkHandle(uint64_t trace_id) PURE;
+  virtual PerTapSinkHandlePtr
+  createPerTapSinkHandle(uint64_t trace_id,
+                         envoy::config::tap::v3::OutputSink::OutputSinkTypeCase type) PURE;
 };
 
 using SinkPtr = std::unique_ptr<Sink>;
@@ -100,7 +103,7 @@ public:
    *        specifies that output type. May not be used if the configuration does not specify
    *        admin output. May be nullptr if admin is not used to supply the config.
    */
-  virtual void newTapConfig(envoy::config::tap::v3::TapConfig&& proto_config,
+  virtual void newTapConfig(const envoy::config::tap::v3::TapConfig& proto_config,
                             Sink* admin_streamer) PURE;
 };
 
@@ -167,8 +170,9 @@ public:
    * @return a new configuration given a raw tap service config proto. See
    * ExtensionConfig::newTapConfig() for param info.
    */
-  virtual TapConfigSharedPtr createConfigFromProto(envoy::config::tap::v3::TapConfig&& proto_config,
-                                                   Sink* admin_streamer) PURE;
+  virtual TapConfigSharedPtr
+  createConfigFromProto(const envoy::config::tap::v3::TapConfig& proto_config,
+                        Sink* admin_streamer) PURE;
 };
 
 using TapConfigFactoryPtr = std::unique_ptr<TapConfigFactory>;

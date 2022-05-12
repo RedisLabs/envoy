@@ -14,41 +14,40 @@
 #include "envoy/server/admin.h"
 #include "envoy/server/instance.h"
 #include "envoy/server/listener_manager.h"
-#include "envoy/server/overload_manager.h"
+#include "envoy/server/overload/overload_manager.h"
 #include "envoy/upstream/outlier_detection.h"
 #include "envoy/upstream/resource_manager.h"
 
-#include "common/common/assert.h"
-#include "common/common/basic_resource_impl.h"
-#include "common/common/empty_string.h"
-#include "common/common/logger.h"
-#include "common/common/macros.h"
-#include "common/http/conn_manager_impl.h"
-#include "common/http/date_provider_impl.h"
-#include "common/http/default_server_string.h"
-#include "common/http/http1/codec_stats.h"
-#include "common/http/http2/codec_stats.h"
-#include "common/http/request_id_extension_impl.h"
-#include "common/http/utility.h"
-#include "common/network/connection_balancer_impl.h"
-#include "common/network/raw_buffer_socket.h"
-#include "common/router/scoped_config_impl.h"
-#include "common/stats/isolated_store_impl.h"
-
-#include "server/admin/admin_filter.h"
-#include "server/admin/clusters_handler.h"
-#include "server/admin/config_dump_handler.h"
-#include "server/admin/config_tracker_impl.h"
-#include "server/admin/init_dump_handler.h"
-#include "server/admin/listeners_handler.h"
-#include "server/admin/logs_handler.h"
-#include "server/admin/profiling_handler.h"
-#include "server/admin/runtime_handler.h"
-#include "server/admin/server_cmd_handler.h"
-#include "server/admin/server_info_handler.h"
-#include "server/admin/stats_handler.h"
-
-#include "extensions/filters/http/common/pass_through_filter.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/basic_resource_impl.h"
+#include "source/common/common/empty_string.h"
+#include "source/common/common/logger.h"
+#include "source/common/common/macros.h"
+#include "source/common/http/conn_manager_config.h"
+#include "source/common/http/conn_manager_impl.h"
+#include "source/common/http/date_provider_impl.h"
+#include "source/common/http/default_server_string.h"
+#include "source/common/http/http1/codec_stats.h"
+#include "source/common/http/http2/codec_stats.h"
+#include "source/common/http/request_id_extension_impl.h"
+#include "source/common/http/utility.h"
+#include "source/common/network/connection_balancer_impl.h"
+#include "source/common/network/raw_buffer_socket.h"
+#include "source/common/router/scoped_config_impl.h"
+#include "source/common/stats/isolated_store_impl.h"
+#include "source/extensions/filters/http/common/pass_through_filter.h"
+#include "source/server/admin/admin_filter.h"
+#include "source/server/admin/clusters_handler.h"
+#include "source/server/admin/config_dump_handler.h"
+#include "source/server/admin/config_tracker_impl.h"
+#include "source/server/admin/init_dump_handler.h"
+#include "source/server/admin/listeners_handler.h"
+#include "source/server/admin/logs_handler.h"
+#include "source/server/admin/profiling_handler.h"
+#include "source/server/admin/runtime_handler.h"
+#include "source/server/admin/server_cmd_handler.h"
+#include "source/server/admin/server_info_handler.h"
+#include "source/server/admin/stats_handler.h"
 
 #include "absl/strings/string_view.h"
 
@@ -69,7 +68,8 @@ class AdminImpl : public Admin,
                   public Http::ConnectionManagerConfig,
                   Logger::Loggable<Logger::Id::admin> {
 public:
-  AdminImpl(const std::string& profile_path, Server::Instance& server);
+  AdminImpl(const std::string& profile_path, Server::Instance& server,
+            bool ignore_global_conn_limit);
 
   Http::Code runCallback(absl::string_view path_and_query,
                          Http::ResponseHeaderMap& response_headers, Buffer::Instance& response,
@@ -84,13 +84,17 @@ public:
   // The prefix must start with "/" and contain at least one additional character.
   bool addHandler(const std::string& prefix, const std::string& help_text, HandlerCb callback,
                   bool removable, bool mutates_server_state) override;
+  bool addStreamingHandler(const std::string& prefix, const std::string& help_text,
+                           GenRequestFn callback, bool removable,
+                           bool mutates_server_state) override;
   bool removeHandler(const std::string& prefix) override;
   ConfigTracker& getConfigTracker() override;
 
-  void startHttpListener(const std::string& access_log_path, const std::string& address_out_path,
+  void startHttpListener(const std::list<AccessLog::InstanceSharedPtr>& access_logs,
+                         const std::string& address_out_path,
                          Network::Address::InstanceConstSharedPtr address,
                          const Network::Socket::OptionsSharedPtr& socket_options,
-                         Stats::ScopePtr&& listener_scope) override;
+                         Stats::ScopeSharedPtr&& listener_scope) override;
   uint32_t concurrency() const override { return server_.options().concurrency(); }
 
   // Network::FilterChainManager
@@ -114,7 +118,9 @@ public:
   }
 
   // Http::ConnectionManagerConfig
-  Http::RequestIDExtensionSharedPtr requestIDExtension() override { return request_id_extension_; }
+  const Http::RequestIDExtensionSharedPtr& requestIDExtension() override {
+    return request_id_extension_;
+  }
   const std::list<AccessLog::InstanceSharedPtr>& accessLogs() override { return access_logs_; }
   Http::ServerConnectionPtr createCodec(Network::Connection& connection,
                                         const Buffer::Instance& data,
@@ -134,6 +140,7 @@ public:
   uint32_t maxRequestHeadersCount() const override { return max_request_headers_count_; }
   std::chrono::milliseconds streamIdleTimeout() const override { return {}; }
   std::chrono::milliseconds requestTimeout() const override { return {}; }
+  std::chrono::milliseconds requestHeadersTimeout() const override { return {}; }
   std::chrono::milliseconds delayedCloseTimeout() const override { return {}; }
   absl::optional<std::chrono::milliseconds> maxStreamDuration() const override {
     return max_stream_duration_;
@@ -143,6 +150,7 @@ public:
     return &scoped_route_config_provider_;
   }
   const std::string& serverName() const override { return Http::DefaultServerString::get(); }
+  const absl::optional<std::string>& schemeToSet() const override { return scheme_; }
   HttpConnectionManagerProto::ServerHeaderTransformation
   serverHeaderTransformation() const override {
     return HttpConnectionManagerProto::OVERWRITE;
@@ -172,36 +180,84 @@ public:
   const Http::Http1Settings& http1Settings() const override { return http1_settings_; }
   bool shouldNormalizePath() const override { return true; }
   bool shouldMergeSlashes() const override { return true; }
-  bool shouldStripMatchingPort() const override { return false; }
+  bool shouldStripTrailingHostDot() const override { return false; }
+  Http::StripPortType stripPortType() const override { return Http::StripPortType::None; }
   envoy::config::core::v3::HttpProtocolOptions::HeadersWithUnderscoresAction
   headersWithUnderscoresAction() const override {
     return envoy::config::core::v3::HttpProtocolOptions::ALLOW;
   }
   const LocalReply::LocalReply& localReply() const override { return *local_reply_; }
+  envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager::
+      PathWithEscapedSlashesAction
+      pathWithEscapedSlashesAction() const override {
+    return envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager::
+        KEEP_UNCHANGED;
+  }
+  const std::vector<Http::OriginalIPDetectionSharedPtr>&
+  originalIpDetectionExtensions() const override {
+    return detection_extensions_;
+  }
   Http::Code request(absl::string_view path_and_query, absl::string_view method,
                      Http::ResponseHeaderMap& response_headers, std::string& body) override;
   void closeSocket();
   void addListenerToHandler(Network::ConnectionHandler* handler) override;
-  Server::Instance& server() { return server_; }
 
-  AdminFilter::AdminServerCallbackFunction createCallbackFunction() {
-    return [this](absl::string_view path_and_query, Http::ResponseHeaderMap& response_headers,
-                  Buffer::OwnedImpl& response, AdminFilter& filter) -> Http::Code {
-      return runCallback(path_and_query, response_headers, response, filter);
+  GenRequestFn createRequestFunction() {
+    return [this](absl::string_view path_and_query, AdminStream& admin_stream) -> RequestPtr {
+      return makeRequest(path_and_query, admin_stream);
     };
+  }
+  uint64_t maxRequestsPerConnection() const override { return 0; }
+  const HttpConnectionManagerProto::ProxyStatusConfig* proxyStatusConfig() const override {
+    return proxy_status_config_.get();
   }
 
 private:
+  friend class AdminTestingPeer;
+
   /**
    * Individual admin handler including prefix, help text, and callback.
    */
   struct UrlHandler {
     const std::string prefix_;
     const std::string help_text_;
-    const HandlerCb handler_;
+    const GenRequestFn handler_;
     const bool removable_;
     const bool mutates_server_state_;
   };
+
+  /**
+   * Creates a Request from a url.
+   */
+  RequestPtr makeRequest(absl::string_view path_and_query, AdminStream& admin_stream);
+
+  /**
+   * Creates a UrlHandler structure from a non-chunked callback.
+   */
+  UrlHandler makeHandler(const std::string& prefix, const std::string& help_text,
+                         HandlerCb callback, bool removable, bool mutates_state);
+
+  /**
+   * Creates a URL prefix bound to chunked handler. Handler is expected to
+   * supply a method makeRequest(absl::string_view, AdminStream&).
+   *
+   * @param prefix the prefix to register
+   * @param help_text a help text ot display in a table in the admin home page
+   * @param handler the Handler object for the admin subsystem, supplying makeContext().
+   * @param removeable indicates whether the handler can be removed after being added
+   * @param mutates_state indicates whether the handler will mutate state and therefore
+   *                      must be accessed via HTTP POST rather than GET.
+   * @return the UrlHandler.
+   */
+  template <class Handler>
+  UrlHandler makeStreamingHandler(const std::string& prefix, const std::string& help_text,
+                                  Handler& handler, bool removable, bool mutates_state) {
+    return {prefix, help_text,
+            [&handler](absl::string_view path, AdminStream& admin_stream) -> Admin::RequestPtr {
+              return handler.makeRequest(path, admin_stream);
+            },
+            removable, mutates_state};
+  }
 
   /**
    * Implementation of RouteConfigProvider that returns a static null route config.
@@ -210,17 +266,16 @@ private:
     NullRouteConfigProvider(TimeSource& time_source);
 
     // Router::RouteConfigProvider
-    Router::ConfigConstSharedPtr config() override { return config_; }
-    absl::optional<ConfigInfo> configInfo() const override { return {}; }
+    Rds::ConfigConstSharedPtr config() const override { return config_; }
+    const absl::optional<ConfigInfo>& configInfo() const override { return config_info_; }
     SystemTime lastUpdated() const override { return time_source_.systemTime(); }
     void onConfigUpdate() override {}
-    void validateConfig(const envoy::config::route::v3::RouteConfiguration&) const override {}
+    Router::ConfigConstSharedPtr configCast() const override { return config_; }
     void requestVirtualHostsUpdate(const std::string&, Event::Dispatcher&,
-                                   std::weak_ptr<Http::RouteConfigUpdatedCallback>) override {
-      NOT_IMPLEMENTED_GCOVR_EXCL_LINE;
-    }
+                                   std::weak_ptr<Http::RouteConfigUpdatedCallback>) override {}
 
     Router::ConfigConstSharedPtr config_;
+    absl::optional<ConfigInfo> config_info_;
     TimeSource& time_source_;
   };
 
@@ -251,9 +306,13 @@ private:
    * OverloadManager keeps the admin interface accessible even when the proxy is overloaded.
    */
   struct NullOverloadManager : public OverloadManager {
-    struct NullThreadLocalOverloadState : public ThreadLocalOverloadState {
+    struct OverloadState : public ThreadLocalOverloadState {
+      OverloadState(Event::Dispatcher& dispatcher) : dispatcher_(dispatcher) {}
       const OverloadActionState& getState(const std::string&) override { return inactive_; }
-
+      bool tryAllocateResource(OverloadProactiveResourceName, int64_t) override { return false; }
+      bool tryDeallocateResource(OverloadProactiveResourceName, int64_t) override { return false; }
+      bool isResourceMonitorEnabled(OverloadProactiveResourceName) override { return false; }
+      Event::Dispatcher& dispatcher_;
       const OverloadActionState inactive_ = OverloadActionState::inactive();
     };
 
@@ -261,18 +320,20 @@ private:
         : tls_(slot_allocator.allocateSlot()) {}
 
     void start() override {
-      tls_->set([](Event::Dispatcher&) -> ThreadLocal::ThreadLocalObjectSharedPtr {
-        return std::make_shared<NullThreadLocalOverloadState>();
+      tls_->set([](Event::Dispatcher& dispatcher) -> ThreadLocal::ThreadLocalObjectSharedPtr {
+        return std::make_shared<OverloadState>(dispatcher);
       });
     }
 
     ThreadLocalOverloadState& getThreadLocalOverloadState() override {
-      return tls_->getTyped<NullThreadLocalOverloadState>();
+      return tls_->getTyped<OverloadState>();
     }
+
+    Event::ScaledRangeTimerManagerFactory scaledTimerFactory() override { return nullptr; }
 
     bool registerForAction(const std::string&, Event::Dispatcher&, OverloadActionCb) override {
       // This method shouldn't be called by the admin listener
-      NOT_REACHED_GCOVR_EXCL_LINE;
+      IS_ENVOY_BUG("Unexpected function call");
       return false;
     }
 
@@ -292,6 +353,7 @@ private:
   Http::Code handlerHelp(absl::string_view path_and_query,
                          Http::ResponseHeaderMap& response_headers, Buffer::Instance& response,
                          AdminStream&);
+  void getHelp(Buffer::Instance& response);
 
   class AdminListenSocketFactory : public Network::ListenSocketFactory {
   public:
@@ -299,19 +361,18 @@ private:
 
     // Network::ListenSocketFactory
     Network::Socket::Type socketType() const override { return socket_->socketType(); }
-
     const Network::Address::InstanceConstSharedPtr& localAddress() const override {
-      return socket_->localAddress();
+      return socket_->connectionInfoProvider().localAddress();
     }
-
-    Network::SocketSharedPtr getListenSocket() override {
+    Network::SocketSharedPtr getListenSocket(uint32_t) override {
       // This is only supposed to be called once.
       RELEASE_ASSERT(!socket_create_, "AdminListener's socket shouldn't be shared.");
       socket_create_ = true;
       return socket_;
     }
-
-    Network::SocketOptRef sharedSocket() const override { return absl::nullopt; }
+    Network::ListenSocketFactoryPtr clone() const override { return nullptr; }
+    void closeAllSockets() override {}
+    void doFinalPreWorkerInit() override {}
 
   private:
     Network::SocketSharedPtr socket_;
@@ -320,10 +381,10 @@ private:
 
   class AdminListener : public Network::ListenerConfig {
   public:
-    AdminListener(AdminImpl& parent, Stats::ScopePtr&& listener_scope)
+    AdminListener(AdminImpl& parent, Stats::ScopeSharedPtr&& listener_scope)
         : parent_(parent), name_("admin"), scope_(std::move(listener_scope)),
           stats_(Http::ConnectionManagerImpl::generateListenerStats("http.admin.", *scope_)),
-          init_manager_(nullptr) {}
+          init_manager_(nullptr), ignore_global_conn_limit_(parent.ignore_global_conn_limit_) {}
 
     // Network::ListenerConfig
     Network::FilterChainManager& filterChainManager() override { return parent_; }
@@ -339,14 +400,11 @@ private:
     Stats::Scope& listenerScope() override { return *scope_; }
     uint64_t listenerTag() const override { return 0; }
     const std::string& name() const override { return name_; }
-    Network::ActiveUdpListenerFactory* udpListenerFactory() override {
-      NOT_REACHED_GCOVR_EXCL_LINE;
+    Network::UdpListenerConfigOptRef udpListenerConfig() override {
+      return Network::UdpListenerConfigOptRef();
     }
-    Network::UdpPacketWriterFactoryOptRef udpPacketWriterFactory() override {
-      NOT_REACHED_GCOVR_EXCL_LINE;
-    }
-    Network::UdpListenerWorkerRouterOptRef udpListenerWorkerRouter() override {
-      NOT_REACHED_GCOVR_EXCL_LINE;
+    Network::InternalListenerConfigOptRef internalListenerConfig() override {
+      return Network::InternalListenerConfigOptRef();
     }
     envoy::config::core::v3::TrafficDirection direction() const override {
       return envoy::config::core::v3::UNSPECIFIED;
@@ -358,10 +416,11 @@ private:
     }
     uint32_t tcpBacklogSize() const override { return ENVOY_TCP_BACKLOG_SIZE; }
     Init::Manager& initManager() override { return *init_manager_; }
+    bool ignoreGlobalConnLimit() const override { return ignore_global_conn_limit_; }
 
     AdminImpl& parent_;
     const std::string name_;
-    Stats::ScopePtr scope_;
+    Stats::ScopeSharedPtr scope_;
     Http::ConnectionManagerListenerStats stats_;
     Network::NopConnectionBalancerImpl connection_balancer_;
     BasicResourceLimitImpl open_connections_;
@@ -369,6 +428,7 @@ private:
   private:
     const std::vector<AccessLog::InstanceSharedPtr> empty_access_logs_;
     std::unique_ptr<Init::Manager> init_manager_;
+    const bool ignore_global_conn_limit_;
   };
   using AdminListenerPtr = std::unique_ptr<AdminListener>;
 
@@ -383,9 +443,15 @@ private:
       return transport_socket_factory_;
     }
 
+    std::chrono::milliseconds transportSocketConnectTimeout() const override {
+      return std::chrono::milliseconds::zero();
+    }
+
     const std::vector<Network::FilterFactoryCb>& networkFilterFactories() const override {
       return empty_network_filter_factory_;
     }
+
+    absl::string_view name() const override { return "admin"; }
 
   private:
     const Network::RawBufferSocketFactory transport_socket_factory_;
@@ -429,10 +495,14 @@ private:
   ConfigTrackerImpl config_tracker_;
   const Network::FilterChainSharedPtr admin_filter_chain_;
   Network::SocketSharedPtr socket_;
-  Network::ListenSocketFactorySharedPtr socket_factory_;
+  Network::ListenSocketFactoryPtr socket_factory_;
   AdminListenerPtr listener_;
   const AdminInternalAddressConfig internal_address_config_;
   const LocalReply::LocalReplyPtr local_reply_;
+  const std::vector<Http::OriginalIPDetectionSharedPtr> detection_extensions_{};
+  const absl::optional<std::string> scheme_{};
+  const bool ignore_global_conn_limit_;
+  std::unique_ptr<HttpConnectionManagerProto::ProxyStatusConfig> proxy_status_config_;
 };
 
 } // namespace Server

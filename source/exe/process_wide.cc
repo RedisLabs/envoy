@@ -1,10 +1,9 @@
-#include "exe/process_wide.h"
+#include "source/exe/process_wide.h"
 
-#include "common/common/assert.h"
-#include "common/event/libevent.h"
-#include "common/http/http2/nghttp2.h"
-
-#include "server/proto_descriptors.h"
+#include "source/common/common/assert.h"
+#include "source/common/event/libevent.h"
+#include "source/common/http/http2/nghttp2.h"
+#include "source/server/proto_descriptors.h"
 
 #include "ares.h"
 
@@ -13,11 +12,13 @@ namespace {
 // Static variable to count initialization pairs. For tests like
 // main_common_test, we need to count to avoid double initialization or
 // shutdown.
-uint32_t process_wide_initialized;
+std::atomic<uint32_t>& processWideInitialized() {
+  MUTABLE_CONSTRUCT_ON_FIRST_USE(std::atomic<uint32_t>);
+};
 } // namespace
 
-ProcessWide::ProcessWide() : initialization_depth_(process_wide_initialized) {
-  if (process_wide_initialized++ == 0) {
+ProcessWide::ProcessWide() {
+  if (processWideInitialized()++ == 0) {
     ares_library_init(ARES_LIB_INIT_ALL);
     Event::Libevent::Global::initialize();
     Envoy::Server::validateProtoDescriptors();
@@ -41,12 +42,12 @@ ProcessWide::ProcessWide() : initialization_depth_(process_wide_initialized) {
 }
 
 ProcessWide::~ProcessWide() {
+  auto& process_wide_initialized = processWideInitialized();
   ASSERT(process_wide_initialized > 0);
   if (--process_wide_initialized == 0) {
     process_wide_initialized = false;
     ares_library_cleanup();
   }
-  ASSERT(process_wide_initialized == initialization_depth_);
 }
 
 } // namespace Envoy

@@ -8,7 +8,7 @@
 #include "envoy/ssl/private_key/private_key.h"
 #include "envoy/stats/scope.h"
 
-#include "extensions/transport_sockets/tls/private_key/private_key_manager_impl.h"
+#include "source/extensions/transport_sockets/tls/private_key/private_key_manager_impl.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -24,7 +24,7 @@ namespace Tls {
  */
 class ContextManagerImpl final : public Envoy::Ssl::ContextManager {
 public:
-  ContextManagerImpl(TimeSource& time_source) : time_source_(time_source) {}
+  explicit ContextManagerImpl(TimeSource& time_source);
   ~ContextManagerImpl() override;
 
   // Ssl::ContextManager
@@ -40,11 +40,11 @@ public:
   Ssl::PrivateKeyMethodManager& privateKeyMethodManager() override {
     return private_key_method_manager_;
   };
+  void removeContext(const Envoy::Ssl::ContextSharedPtr& old_context) override;
 
 private:
-  void removeEmptyContexts();
   TimeSource& time_source_;
-  std::list<std::weak_ptr<Envoy::Ssl::Context>> contexts_;
+  absl::flat_hash_set<Envoy::Ssl::ContextSharedPtr> contexts_;
   PrivateKeyMethodManagerImpl private_key_method_manager_{};
 };
 

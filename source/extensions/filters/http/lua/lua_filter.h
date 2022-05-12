@@ -4,14 +4,11 @@
 #include "envoy/http/filter.h"
 #include "envoy/upstream/cluster_manager.h"
 
-#include "common/crypto/utility.h"
-#include "common/http/utility.h"
-
-#include "extensions/common/utility.h"
-#include "extensions/filters/common/lua/wrappers.h"
-#include "extensions/filters/http/common/factory_base.h"
-#include "extensions/filters/http/lua/wrappers.h"
-#include "extensions/filters/http/well_known_names.h"
+#include "source/common/crypto/utility.h"
+#include "source/common/http/utility.h"
+#include "source/extensions/filters/common/lua/wrappers.h"
+#include "source/extensions/filters/http/common/factory_base.h"
+#include "source/extensions/filters/http/lua/wrappers.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -135,8 +132,9 @@ public:
     Responded
   };
 
-  StreamHandleWrapper(Filters::Common::Lua::Coroutine& coroutine, Http::HeaderMap& headers,
-                      bool end_stream, Filter& filter, FilterCallbacks& callbacks);
+  StreamHandleWrapper(Filters::Common::Lua::Coroutine& coroutine,
+                      Http::RequestOrResponseHeaderMap& headers, bool end_stream, Filter& filter,
+                      FilterCallbacks& callbacks, TimeSource& time_source);
 
   Http::FilterHeadersStatus start(int function_ref);
   Http::FilterDataStatus onData(Buffer::Instance& data, bool end_stream);
@@ -167,7 +165,8 @@ public:
             {"connection", static_luaConnection},
             {"importPublicKey", static_luaImportPublicKey},
             {"verifySignature", static_luaVerifySignature},
-            {"base64Escape", static_luaBase64Escape}};
+            {"base64Escape", static_luaBase64Escape},
+            {"timestamp", static_luaTimestamp}};
   }
 
 private:
@@ -277,8 +276,18 @@ private:
    */
   DECLARE_LUA_FUNCTION(StreamHandleWrapper, luaBase64Escape);
 
+  /**
+   * Timestamp.
+   * @param1 (string) optional format (e.g. milliseconds_from_epoch, nanoseconds_from_epoch).
+   * Defaults to milliseconds_from_epoch.
+   * @return timestamp
+   */
+  DECLARE_LUA_FUNCTION(StreamHandleWrapper, luaTimestamp);
+
   int doSynchronousHttpCall(lua_State* state, Tracing::Span& span);
   int doAsynchronousHttpCall(lua_State* state, Tracing::Span& span);
+
+  int timestamp(int timestamp, absl::uint128 resolution);
 
   // Filters::Common::Lua::BaseLuaObject
   void onMarkDead() override {
@@ -299,7 +308,7 @@ private:
   void onBeforeFinalizeUpstreamSpan(Tracing::Span&, const Http::ResponseHeaderMap*) override {}
 
   Filters::Common::Lua::Coroutine& coroutine_;
-  Http::HeaderMap& headers_;
+  Http::RequestOrResponseHeaderMap& headers_;
   bool end_stream_;
   bool headers_continued_{};
   bool buffered_body_{};
@@ -317,6 +326,7 @@ private:
   State state_{State::Running};
   std::function<void()> yield_callback_;
   Http::AsyncClient::Request* http_request_{};
+  TimeSource& time_source_;
 
   // The inserted crypto object pointers will not be removed from this map.
   absl::flat_hash_map<std::string, Envoy::Common::Crypto::CryptoObjectPtr> public_key_storage_;
@@ -399,7 +409,7 @@ PerLuaCodeSetup* getPerLuaCodeSetup(const FilterConfig* filter_config,
   const FilterConfigPerRoute* config_per_route = nullptr;
   if (callbacks && callbacks->route()) {
     config_per_route = Http::Utility::resolveMostSpecificPerFilterConfig<FilterConfigPerRoute>(
-        HttpFilterNames::get().Lua, callbacks->route());
+        "envoy.filters.http.lua", callbacks->route());
   }
 
   if (config_per_route != nullptr) {
@@ -425,11 +435,12 @@ PerLuaCodeSetup* getPerLuaCodeSetup(const FilterConfig* filter_config,
  */
 class Filter : public Http::StreamFilter, Logger::Loggable<Logger::Id::lua> {
 public:
-  Filter(FilterConfigConstSharedPtr config) : config_(config) {}
+  Filter(FilterConfigConstSharedPtr config, TimeSource& time_source)
+      : config_(config), time_source_(time_source) {}
 
   Upstream::ClusterManager& clusterManager() { return config_->cluster_manager_; }
   void scriptError(const Filters::Common::Lua::LuaException& e);
-  virtual void scriptLog(spdlog::level::level_enum level, const char* message);
+  virtual void scriptLog(spdlog::level::level_enum level, absl::string_view message);
 
   // Http::StreamFilterBase
   void onDestroy() override;
@@ -453,7 +464,7 @@ public:
   }
 
   // Http::StreamEncoderFilter
-  Http::FilterHeadersStatus encode100ContinueHeaders(Http::ResponseHeaderMap&) override {
+  Http::FilterHeadersStatus encode1xxHeaders(Http::ResponseHeaderMap&) override {
     return Http::FilterHeadersStatus::Continue;
   }
   Http::FilterHeadersStatus encodeHeaders(Http::ResponseHeaderMap& headers,
@@ -526,8 +537,8 @@ private:
   Http::FilterHeadersStatus doHeaders(StreamHandleRef& handle,
                                       Filters::Common::Lua::CoroutinePtr& coroutine,
                                       FilterCallbacks& callbacks, int function_ref,
-                                      PerLuaCodeSetup* setup, Http::HeaderMap& headers,
-                                      bool end_stream);
+                                      PerLuaCodeSetup* setup,
+                                      Http::RequestOrResponseHeaderMap& headers, bool end_stream);
   Http::FilterDataStatus doData(StreamHandleRef& handle, Buffer::Instance& data, bool end_stream);
   Http::FilterTrailersStatus doTrailers(StreamHandleRef& handle, Http::HeaderMap& trailers);
 
@@ -537,6 +548,7 @@ private:
   StreamHandleRef request_stream_wrapper_;
   StreamHandleRef response_stream_wrapper_;
   bool destroyed_{};
+  TimeSource& time_source_;
 
   // These coroutines used to be owned by the stream handles. After investigating #3570, it
   // became clear that there is a circular memory reference when a coroutine yields. Basically,

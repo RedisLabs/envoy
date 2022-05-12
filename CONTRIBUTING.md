@@ -29,7 +29,7 @@ following guidelines for all code, APIs, and documentation:
 * The following words and phrases are not allowed:
   * *Whitelist*: use allowlist instead.
   * *Blacklist*: use denylist or blocklist instead.
-  * *Master*: use primary instead.
+  * *Master*: use primary or main instead.
   * *Slave*: use secondary or replica instead.
 * Documentation should be written in an inclusive style. The [Google developer
   documentation](https://developers.google.com/style/inclusive-documentation) contains an excellent
@@ -47,7 +47,7 @@ versioning guidelines:
 
 * Features may be marked as deprecated in a given versioned API at any point in time, but this may
   only be done when a replacement implementation and configuration path is available in Envoy on
-  master. Deprecators must implement a conversion from the deprecated configuration to the latest
+  main. Deprecators must implement a conversion from the deprecated configuration to the latest
   `vNalpha` (with the deprecated field) that Envoy uses internally. A field may be deprecated if
   this tool would be able to perform the conversion. For example, removing a field to describe
   HTTP/2 window settings is valid if a more comprehensive HTTP/2 protocol options field is being
@@ -73,7 +73,10 @@ versioning guidelines:
   `envoy.features.enable_all_deprecated_features` is set to true. Finally, following the deprecation
   of the API major version where the field was first marked deprecated, the entire implementation
   code will be removed from the Envoy implementation.
-* This policy means that organizations deploying master should have some time to get ready for
+* If the runtime key `envoy.features.fail_on_any_deprecated_feature` is enabled,
+  use of deprecated fields will trigger a configuration load failure
+  rather than a logged warning.
+* This policy means that organizations deploying main should have some time to get ready for
   breaking changes at the next major API version. This is typically a window of at least 12 months
   or until the organization moves to the next major API version.
 * The breaking change policy also applies to source level extensions (e.g., filters). Code that
@@ -99,7 +102,7 @@ versioning guidelines:
 
   Please see [support/README.md](support/README.md) for more information on these hooks.
 
-* Create your PR.
+* Create your PR. If your PR adds new code, it should include tests [covering](source/docs/coverage.md) the new code. Please note that draft PRs may not be reviewed and will likely not be triaged, so do not create your PR as a draft if you want prompt reviews!
 * Tests will automatically run for you.
 * We will **not** merge any PR that is not passing tests.
 * PRs are expected to have 100% test coverage for added code. This can be verified with a coverage
@@ -129,9 +132,19 @@ versioning guidelines:
   for further details.
 * When all of the tests are passing and all other conditions described herein are satisfied, a
   maintainer will be assigned to review and merge the PR.
-* Once you submit a PR, *please do not rebase it*. It's much easier to review if subsequent commits
-  are new commits and/or merges. We squash rebase the final merged commit so the number of commits
-  you have in the PR don't matter.
+* Once your PR is under review, *please do not rebase it*. If you rebase, you will need to force push to
+  github, and github's user interface will force your reviewer to review the PR
+  from stratch rather than simply look at your latest changes.  It's much easier to review
+  new commits and/or merges. We squash rebase the final merged commit so the number of commits
+  you have in the PR don't matter. Again once your PR is assigned a reviewer, unless you need to fix DCO
+  *please do not force push*.  If you need to pull recent changes you can run
+  ```
+  branch=$(git status|head -1|cut -f3 -d\ )
+  git checkout main
+  git pull
+  git checkout "$branch"
+  git pull
+  ```
 * We expect that once a PR is opened, it will be actively worked on until it is merged or closed.
   We reserve the right to close PRs that are not making progress. This is generally defined as no
   changes for 7 days. Obviously PRs that are closed due to lack of activity can be reopened later.
@@ -144,7 +157,7 @@ versioning guidelines:
 * If your PR involves any changes to
   [envoy-filter-example](https://github.com/envoyproxy/envoy-filter-example) (for example making a new
   branch so that CI can pass) it is your responsibility to follow through with merging those
-  changes back to master once the CI dance is done.
+  changes back to main once the CI dance is done.
 * If your PR is a high risk change, the reviewer may ask that you runtime guard
   it. See the section on runtime guarding below.
 
@@ -189,28 +202,37 @@ maintainer's discretion. Generally all runtime guarded features will be set true
 release is cut. Old code paths for refactors can be cleaned up after a release and there has been
 some production run time. Old code for behavioral changes will be deprecated after six months.
 Runtime features are set true by default by inclusion in
-[source/common/runtime/runtime_features.cc](https://github.com/envoyproxy/envoy/blob/master/source/common/runtime/runtime_features.cc)
+[source/common/runtime/runtime_features.cc](https://github.com/envoyproxy/envoy/blob/main/source/common/runtime/runtime_features.cc)
 
 There are four suggested options for testing new runtime features:
 
-1. Create a per-test Runtime::LoaderSingleton as done in [DeprecatedFieldsTest.IndividualFieldDisallowedWithRuntimeOverride](https://github.com/envoyproxy/envoy/blob/master/test/common/protobuf/utility_test.cc)
-2. Create a [parameterized test](https://github.com/google/googletest/blob/master/googletest/docs/advanced.md#how-to-write-value-parameterized-tests)
+1. Create a per-test Runtime::LoaderSingleton as done in [DeprecatedFieldsTest.IndividualFieldDisallowedWithRuntimeOverride](https://github.com/envoyproxy/envoy/blob/main/test/common/protobuf/utility_test.cc)
+2. Create a [parameterized test](https://github.com/google/googletest/blob/master/docs/advanced.md#how-to-write-value-parameterized-tests)
    where the set up of the test sets the new runtime value explicitly to
    GetParam() as outlined in (1).
 3. Set up integration tests with custom runtime defaults as documented in the
-   [integration test README](https://github.com/envoyproxy/envoy/blob/master/test/integration/README.md)
+   [integration test README](https://github.com/envoyproxy/envoy/blob/main/test/integration/README.md)
 4. Run a given unit test with the new runtime value explicitly set true or false as done
-   for [runtime_flag_override_test](https://github.com/envoyproxy/envoy/blob/master/test/common/runtime/BUILD)
+   for [runtime_flag_override_test](https://github.com/envoyproxy/envoy/blob/main/test/common/runtime/BUILD)
 
 Runtime code is held to the same standard as regular Envoy code, so both the old
 path and the new should have 100% coverage both with the feature defaulting true
 and false.
 
+Please note that if adding a runtime guarded feature, your [release notes](docs/root/version_history/current.rst) should include both the functional change, and how to revert it, for example
+
+```rst
+* http: changed the ``:scheme`` header to ``:schema``. This behavioral change can be
+temporarily reverted by setting runtime guard ``envoy.reloadable_features.schema_is_better_than_scheme`` to false.
+```
+
 # PR review policy for maintainers
 
 * Typically we try to turn around reviews within one business day.
 * See [OWNERS.md](OWNERS.md) for the current list of maintainers.
-* It is generally expected that a senior maintainer should review every PR.
+* It is generally expected that a senior maintainer should review every PR to
+  core code. Test-only or extension-only changes need only be reviewed by a
+  maintainer, or senior extension maintainer.
 * It is also generally expected that a "domain expert" for the code the PR touches should review the
   PR. This person does not necessarily need to have commit access.
 * The previous two points generally mean that every PR should have two approvals. (Exceptions can
@@ -233,6 +255,13 @@ and false.
 * If a PR includes a deprecation/breaking change, notification should be sent to the
   [envoy-announce](https://groups.google.com/forum/#!forum/envoy-announce) email list.
 
+# API changes
+
+If you change anything in the [api tree](https://github.com/envoyproxy/envoy/tree/main/api),
+please read the [API Review
+Checklist](https://github.com/envoyproxy/envoy/tree/main/api/review_checklist.md)
+and make sure that your changes have addressed all of the considerations listed there.
+
 # Adding new extensions
 
 For developers adding a new extension, one can take an existing extension as the starting point.
@@ -243,15 +272,20 @@ Extension configuration should be located in a directory structure like
 The code for the extension should be located under the equivalent
 `source/extensions/area/plugin`, and include an *envoy_cc_extension* with the
 configuration and tagged with the appropriate security posture, and an
-*envoy_cc_library* with the code. More details on how to add a new extension
-API can be found [here](api/STYLE.md#adding-an-extension-configuration-to-the-api):
+*envoy_cc_library* with the code.
 
-Other changes will likely include
+More details on how to add a new extension API can be found [here](api/STYLE.md#adding-an-extension-configuration-to-the-api):
 
-  * Editing [source/extensions/extensions_build_config.bzl](source/extensions/extensions_build_config.bzl) to include the new extensions
-  * Editing [docs/root/api-v3/config/config.rst](docs/root/api-v3/config/config.rst) to add area/area
-  * Adding `docs/root/api-v3/config/area/area.rst` to add a table of contents for the API docs
-  * Adding `source/extensions/area/well_known_names.h` for registered plugins
+# Adding contrib extensions
+
+See [EXTENSION_POLICY.md](EXTENSION_POLICY.md) for more information on contrib. Adding a contrib
+extension mostly mirrors adding a normal extension above. Some differences are noted here:
+
+* API files should be added in `api/contrib/envoy/`, but the protos' namespaces should still be as
+  in normal extensions (which will make file movement easier later if the extension gets promoted
+  to core).
+* Build config and metadata should be included in [contrib/contrib_build_config.bzl](contrib/contrib_build_config.bzl)
+  and [contrib/extensions_metadata.yaml](contrib/extensions_metadata.yaml).
 
 # DCO: Sign your work
 
@@ -344,14 +378,6 @@ Note, that in general rewriting history in this way is a hindrance to the review
 should only be done to correct a DCO mistake.
 
 ## Triggering CI re-run without making changes
-
-To rerun failed tasks in Circle-CI, add a comment with the line
-
-```
-/retest-circle
-```
-
-in it. This should rebuild only the failed tasks.
 
 To rerun failed tasks in Azure pipelines, add a comment with the line
 

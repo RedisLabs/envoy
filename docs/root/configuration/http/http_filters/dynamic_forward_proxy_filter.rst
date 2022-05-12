@@ -31,11 +31,15 @@ host when forwarding. See the example below within the configured routes.
 .. _dns_cache_circuit_breakers:
 
   Dynamic forward proxy uses circuit breakers built in to the DNS cache with the configuration
-  of :ref:`DNS cache circuit breakers <envoy_v3_api_field_extensions.common.dynamic_forward_proxy.v3.DnsCacheConfig.dns_cache_circuit_breaker>`. By default, this behavior is enabled by the runtime feature `envoy.reloadable_features.enable_dns_cache_circuit_breakers`.
-  If this runtime feature is disabled, cluster circuit breakers will be used even when setting the configuration
   of :ref:`DNS cache circuit breakers <envoy_v3_api_field_extensions.common.dynamic_forward_proxy.v3.DnsCacheConfig.dns_cache_circuit_breaker>`.
 
 .. literalinclude:: _include/dns-cache-circuit-breaker.yaml
+    :language: yaml
+
+Above example is using typed config :ref:`CaresDnsResolverConfig<envoy_v3_api_msg_extensions.network.dns_resolver.cares.v3.CaresDnsResolverConfig>`.
+To use :ref:`AppleDnsResolverConfig<envoy_v3_api_msg_extensions.network.dns_resolver.apple.v3.AppleDnsResolverConfig>` (iOS/macOS only), follow below example:
+
+.. literalinclude:: _include/dns-cache-circuit-breaker-apple.yaml
     :language: yaml
 
 Statistics
@@ -51,6 +55,7 @@ namespace.
   dns_query_attempt, Counter, Number of DNS query attempts.
   dns_query_success, Counter, Number of DNS query successes.
   dns_query_failure, Counter, Number of DNS query failures.
+  dns_query_timeout, Counter, Number of DNS query :ref:`timeouts <envoy_v3_api_field_extensions.common.dynamic_forward_proxy.v3.DnsCacheConfig.dns_query_timeout>`.
   host_address_changed, Counter, Number of DNS queries that resulted in a host address change.
   host_added, Counter, Number of hosts that have been added to the cache.
   host_removed, Counter, Number of hosts that have been removed from the cache.

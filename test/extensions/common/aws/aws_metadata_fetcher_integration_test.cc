@@ -1,6 +1,5 @@
-#include "common/common/fmt.h"
-
-#include "extensions/common/aws/utility.h"
+#include "source/common/common/fmt.h"
+#include "source/extensions/common/aws/utility.h"
 
 #include "test/integration/integration.h"
 #include "test/integration/utility.h"
@@ -23,12 +22,12 @@ public:
       filters:
         name: http
         typed_config:
-          "@type": type.googleapis.com/envoy.config.filter.network.http_connection_manager.v2.HttpConnectionManager
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
           stat_prefix: metadata_test
           http_filters:
             - name: fault
               typed_config:
-                "@type": type.googleapis.com/envoy.config.filter.http.fault.v2.HTTPFault
+                "@type": type.googleapis.com/envoy.extensions.filters.http.fault.v3.HTTPFault
                 delay:
                   fixed_delay:
                     seconds: {}
@@ -56,7 +55,8 @@ public:
                     prefix: "/"
                     headers:
                       - name: Authorization
-                        exact_match: AUTH_TOKEN
+                        string_match:
+                          exact: AUTH_TOKEN
                 - name: no_auth_route
                   direct_response:
                     status: {}

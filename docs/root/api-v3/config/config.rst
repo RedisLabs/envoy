@@ -1,3 +1,5 @@
+.. _api-v3_config:
+
 Extensions
 ==========
 
@@ -7,9 +9,11 @@ Extensions
 
   filter/filter
   accesslog/accesslog
+  accesslog/filters
   rbac/rbac
   health_checker/health_checker
   transport_socket/transport_socket
+  dns_resolver/dns_resolver.rst
   resource_monitor/resource_monitor
   common/common
   compression/compression
@@ -22,3 +26,14 @@ Extensions
   upstream/upstream
   wasm/wasm
   watchdog/watchdog
+  descriptors/descriptors
+  request_id/request_id
+  http/header_formatters
+  http/original_ip_detection
+  http/stateful_session
+  stat_sinks/stat_sinks
+  quic/quic_extensions
+  formatter/formatter
+  contrib/contrib
+  rbac/matchers
+  config_validators/config_validators

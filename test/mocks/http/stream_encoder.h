@@ -2,6 +2,8 @@
 
 #include "envoy/http/codec.h"
 
+#include "source/common/http/status.h"
+
 #include "test/mocks/http/stream.h"
 
 #include "gmock/gmock.h"
@@ -15,6 +17,7 @@ public:
   ~MockHttp1StreamEncoderOptions() override;
 
   MOCK_METHOD(void, disableChunkEncoding, ());
+  MOCK_METHOD(void, enableHalfClose, ());
 };
 
 class MockRequestEncoder : public RequestEncoder {
@@ -23,8 +26,9 @@ public:
   ~MockRequestEncoder() override;
 
   // Http::RequestEncoder
-  MOCK_METHOD(void, encodeHeaders, (const RequestHeaderMap& headers, bool end_stream));
+  MOCK_METHOD(Status, encodeHeaders, (const RequestHeaderMap& headers, bool end_stream));
   MOCK_METHOD(void, encodeTrailers, (const RequestTrailerMap& trailers));
+  MOCK_METHOD(void, enableTcpTunneling, ());
 
   // Http::StreamEncoder
   MOCK_METHOD(void, encodeData, (Buffer::Instance & data, bool end_stream));
@@ -41,7 +45,7 @@ public:
   ~MockResponseEncoder() override;
 
   // Http::ResponseEncoder
-  MOCK_METHOD(void, encode100ContinueHeaders, (const ResponseHeaderMap& headers));
+  MOCK_METHOD(void, encode1xxHeaders, (const ResponseHeaderMap& headers));
   MOCK_METHOD(void, encodeHeaders, (const ResponseHeaderMap& headers, bool end_stream));
   MOCK_METHOD(void, encodeTrailers, (const ResponseTrailerMap& trailers));
 

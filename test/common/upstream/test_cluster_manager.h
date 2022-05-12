@@ -10,20 +10,19 @@
 #include "envoy/network/listen_socket.h"
 #include "envoy/upstream/upstream.h"
 
-#include "common/api/api_impl.h"
-#include "common/config/utility.h"
-#include "common/http/context_impl.h"
-#include "common/network/socket_option_factory.h"
-#include "common/network/socket_option_impl.h"
-#include "common/network/transport_socket_options_impl.h"
-#include "common/network/utility.h"
-#include "common/protobuf/utility.h"
-#include "common/singleton/manager_impl.h"
-#include "common/upstream/cluster_factory_impl.h"
-#include "common/upstream/cluster_manager_impl.h"
-#include "common/upstream/subset_lb.h"
-
-#include "extensions/transport_sockets/tls/context_manager_impl.h"
+#include "source/common/api/api_impl.h"
+#include "source/common/config/utility.h"
+#include "source/common/http/context_impl.h"
+#include "source/common/network/socket_option_factory.h"
+#include "source/common/network/socket_option_impl.h"
+#include "source/common/network/transport_socket_options_impl.h"
+#include "source/common/network/utility.h"
+#include "source/common/protobuf/utility.h"
+#include "source/common/singleton/manager_impl.h"
+#include "source/common/upstream/cluster_factory_impl.h"
+#include "source/common/upstream/cluster_manager_impl.h"
+#include "source/common/upstream/subset_lb.h"
+#include "source/extensions/transport_sockets/tls/context_manager_impl.h"
 
 #include "test/common/stats/stat_test_utility.h"
 #include "test/common/upstream/utility.h"
@@ -71,24 +70,28 @@ public:
               auto result = ClusterFactoryImplBase::create(
                   cluster, cm, stats_, tls_, dns_resolver_, ssl_context_manager_, runtime_,
                   dispatcher_, log_manager_, local_info_, admin_, singleton_manager_,
-                  outlier_event_logger, added_via_api, validation_visitor_, *api_);
+                  outlier_event_logger, added_via_api, validation_visitor_, *api_, options_);
               // Convert from load balancer unique_ptr -> raw pointer -> unique_ptr.
               return std::make_pair(result.first, result.second.release());
             }));
   }
 
   Http::ConnectionPool::InstancePtr allocateConnPool(
-      Event::Dispatcher&, HostConstSharedPtr host, ResourcePriority, Http::Protocol,
+      Event::Dispatcher&, HostConstSharedPtr host, ResourcePriority, std::vector<Http::Protocol>&,
+      const absl::optional<envoy::config::core::v3::AlternateProtocolsCacheOptions>&
+          alternate_protocol_options,
       const Network::ConnectionSocket::OptionsSharedPtr& options,
-      const Network::TransportSocketOptionsSharedPtr& transport_socket_options) override {
-    return Http::ConnectionPool::InstancePtr{
-        allocateConnPool_(host, options, transport_socket_options)};
+      const Network::TransportSocketOptionsConstSharedPtr& transport_socket_options, TimeSource&,
+      ClusterConnectivityState& state, Http::PersistentQuicInfoPtr& /*quic_info*/) override {
+    return Http::ConnectionPool::InstancePtr{allocateConnPool_(
+        host, alternate_protocol_options, options, transport_socket_options, state)};
   }
 
   Tcp::ConnectionPool::InstancePtr
   allocateTcpConnPool(Event::Dispatcher&, HostConstSharedPtr host, ResourcePriority,
                       const Network::ConnectionSocket::OptionsSharedPtr&,
-                      Network::TransportSocketOptionsSharedPtr) override {
+                      Network::TransportSocketOptionsConstSharedPtr,
+                      Upstream::ClusterConnectivityState&) override {
     return Tcp::ConnectionPool::InstancePtr{allocateTcpConnPool_(host)};
   }
 
@@ -100,7 +103,8 @@ public:
     return std::make_pair(result.first, ThreadAwareLoadBalancerPtr(result.second));
   }
 
-  CdsApiPtr createCds(const envoy::config::core::v3::ConfigSource&, ClusterManager&) override {
+  CdsApiPtr createCds(const envoy::config::core::v3::ConfigSource&,
+                      const xds::core::v3::ResourceLocator*, ClusterManager&) override {
     return CdsApiPtr{createCds_()};
   }
 
@@ -110,12 +114,16 @@ public:
   }
 
   Secret::SecretManager& secretManager() override { return secret_manager_; }
+  Singleton::Manager& singletonManager() override { return singleton_manager_; }
 
   MOCK_METHOD(ClusterManager*, clusterManagerFromProto_,
               (const envoy::config::bootstrap::v3::Bootstrap& bootstrap));
   MOCK_METHOD(Http::ConnectionPool::Instance*, allocateConnPool_,
-              (HostConstSharedPtr host, Network::ConnectionSocket::OptionsSharedPtr,
-               Network::TransportSocketOptionsSharedPtr));
+              (HostConstSharedPtr host,
+               const absl::optional<envoy::config::core::v3::AlternateProtocolsCacheOptions>&
+                   alternate_protocol_options,
+               Network::ConnectionSocket::OptionsSharedPtr,
+               Network::TransportSocketOptionsConstSharedPtr, ClusterConnectivityState&));
   MOCK_METHOD(Tcp::ConnectionPool::Instance*, allocateTcpConnPool_, (HostConstSharedPtr host));
   MOCK_METHOD((std::pair<ClusterSharedPtr, ThreadAwareLoadBalancer*>), clusterFromProto_,
               (const envoy::config::cluster::v3::Cluster& cluster, ClusterManager& cm,
@@ -138,6 +146,7 @@ public:
   NiceMock<ProtobufMessage::MockValidationVisitor> validation_visitor_;
   NiceMock<Random::MockRandomGenerator> random_;
   Api::ApiPtr api_;
+  Server::MockOptions options_;
 };
 
 // Helper to intercept calls to postThreadLocalClusterUpdate.
@@ -165,10 +174,11 @@ public:
                          AccessLog::AccessLogManager& log_manager,
                          Event::Dispatcher& main_thread_dispatcher, Server::Admin& admin,
                          ProtobufMessage::ValidationContext& validation_context, Api::Api& api,
-                         Http::Context& http_context, Grpc::Context& grpc_context)
+                         Http::Context& http_context, Grpc::Context& grpc_context,
+                         Router::Context& router_context, Server::Instance& server)
       : ClusterManagerImpl(bootstrap, factory, stats, tls, runtime, local_info, log_manager,
                            main_thread_dispatcher, admin, validation_context, api, http_context,
-                           grpc_context) {}
+                           grpc_context, router_context, server) {}
 
   std::map<std::string, std::reference_wrapper<Cluster>> activeClusters() {
     std::map<std::string, std::reference_wrapper<Cluster>> clusters;
@@ -176,6 +186,18 @@ public:
       clusters.emplace(cluster.first, *cluster.second->cluster_);
     }
     return clusters;
+  }
+
+  OdCdsApiHandlePtr createOdCdsApiHandle(OdCdsApiSharedPtr odcds) {
+    return ClusterManagerImpl::OdCdsApiHandleImpl::create(*this, std::move(odcds));
+  }
+
+  void notifyExpiredDiscovery(absl::string_view name) {
+    ClusterManagerImpl::notifyExpiredDiscovery(name);
+  }
+
+  ClusterDiscoveryManager createAndSwapClusterDiscoveryManager(std::string thread_name) {
+    return ClusterManagerImpl::createAndSwapClusterDiscoveryManager(std::move(thread_name));
   }
 };
 
@@ -192,20 +214,23 @@ public:
                                   ProtobufMessage::ValidationContext& validation_context,
                                   Api::Api& api, MockLocalClusterUpdate& local_cluster_update,
                                   MockLocalHostsRemoved& local_hosts_removed,
-                                  Http::Context& http_context, Grpc::Context& grpc_context)
+                                  Http::Context& http_context, Grpc::Context& grpc_context,
+                                  Router::Context& router_context, Server::Instance& server)
       : TestClusterManagerImpl(bootstrap, factory, stats, tls, runtime, local_info, log_manager,
                                main_thread_dispatcher, admin, validation_context, api, http_context,
-                               grpc_context),
+                               grpc_context, router_context, server),
         local_cluster_update_(local_cluster_update), local_hosts_removed_(local_hosts_removed) {}
 
 protected:
-  void postThreadLocalClusterUpdate(const Cluster&, uint32_t priority,
-                                    const HostVector& hosts_added,
-                                    const HostVector& hosts_removed) override {
-    local_cluster_update_.post(priority, hosts_added, hosts_removed);
+  void postThreadLocalClusterUpdate(ClusterManagerCluster&,
+                                    ThreadLocalClusterUpdateParams&& params) override {
+    for (const auto& per_priority : params.per_priority_update_params_) {
+      local_cluster_update_.post(per_priority.priority_, per_priority.hosts_added_,
+                                 per_priority.hosts_removed_);
+    }
   }
 
-  void postThreadLocalDrainConnections(const Cluster&, const HostVector& hosts_removed) override {
+  void postThreadLocalRemoveHosts(const Cluster&, const HostVector& hosts_removed) override {
     local_hosts_removed_.post(hosts_removed);
   }
 

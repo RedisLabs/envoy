@@ -1,7 +1,7 @@
 #include "envoy/extensions/filters/http/jwt_authn/v3/config.pb.h"
 
-#include "extensions/filters/http/jwt_authn/filter_config.h"
-#include "extensions/filters/http/jwt_authn/verifier.h"
+#include "source/extensions/filters/http/jwt_authn/filter_config.h"
+#include "source/extensions/filters/http/jwt_authn/verifier.h"
 
 #include "test/extensions/filters/http/jwt_authn/mock.h"
 #include "test/extensions/filters/http/jwt_authn/test_common.h"
@@ -32,8 +32,12 @@ ProtobufWkt::Struct getExpectedPayload(const std::string& name) {
 
 class ProviderVerifierTest : public testing::Test {
 public:
+  ProviderVerifierTest() {
+    mock_factory_ctx_.cluster_manager_.initializeThreadLocalClusters({"pubkey_cluster"});
+  }
+
   void createVerifier() {
-    filter_config_ = FilterConfigImpl::create(proto_config_, "", mock_factory_ctx_);
+    filter_config_ = std::make_unique<FilterConfigImpl>(proto_config_, "", mock_factory_ctx_);
     verifier_ = Verifier::create(proto_config_.rules(0).requires(), proto_config_.providers(),
                                  *filter_config_);
   }
@@ -54,11 +58,43 @@ TEST_F(ProviderVerifierTest, TestOkJWT) {
   createVerifier();
   MockUpstream mock_pubkey(mock_factory_ctx_.cluster_manager_, PublicKey);
 
-  EXPECT_CALL(mock_cb_, setPayload(_)).WillOnce(Invoke([](const ProtobufWkt::Struct& payload) {
-    EXPECT_TRUE(TestUtility::protoEqual(payload, getExpectedPayload("my_payload")));
-  }));
+  EXPECT_CALL(mock_cb_, setExtractedData(_))
+      .WillOnce(Invoke([](const ProtobufWkt::Struct& payload) {
+        EXPECT_TRUE(TestUtility::protoEqual(payload, getExpectedPayload("my_payload")));
+      }));
 
-  EXPECT_CALL(mock_cb_, onComplete(Status::Ok)).Times(1);
+  EXPECT_CALL(mock_cb_, onComplete(Status::Ok));
+
+  auto headers = Http::TestRequestHeaderMapImpl{
+      {"Authorization", "Bearer " + std::string(GoodToken)},
+      {"sec-istio-auth-userinfo", ""},
+  };
+  context_ = Verifier::createContext(headers, parent_span_, &mock_cb_);
+  verifier_->verify(context_);
+  EXPECT_EQ(ExpectedPayloadValue, headers.get_("sec-istio-auth-userinfo"));
+}
+
+// Test to set the payload (hence dynamic metadata) with the header and payload extracted from the
+// verified JWT.
+TEST_F(ProviderVerifierTest, TestOkJWTWithExtractedHeaderAndPayload) {
+  TestUtility::loadFromYaml(ExampleConfig, proto_config_);
+  (*proto_config_.mutable_providers())[std::string(ProviderName)].set_payload_in_metadata(
+      "my_payload");
+  (*proto_config_.mutable_providers())[std::string(ProviderName)].set_header_in_metadata(
+      "my_header");
+  createVerifier();
+  MockUpstream mock_pubkey(mock_factory_ctx_.cluster_manager_, PublicKey);
+
+  EXPECT_CALL(mock_cb_, setExtractedData(_))
+      .WillOnce(Invoke([](const ProtobufWkt::Struct& payload) {
+        // The expected payload is a merged struct of the extracted (from the JWT) payload and
+        // header data with "my_payload" and "my_header" as the keys.
+        ProtobufWkt::Struct expected_payload;
+        MessageUtil::loadFromJson(ExpectedPayloadAndHeaderJSON, expected_payload);
+        EXPECT_TRUE(TestUtility::protoEqual(payload, expected_payload));
+      }));
+
+  EXPECT_CALL(mock_cb_, onComplete(Status::Ok));
 
   auto headers = Http::TestRequestHeaderMapImpl{
       {"Authorization", "Bearer " + std::string(GoodToken)},
@@ -76,17 +112,19 @@ TEST_F(ProviderVerifierTest, TestSpanPassedDown) {
   createVerifier();
   MockUpstream mock_pubkey(mock_factory_ctx_.cluster_manager_, PublicKey);
 
-  EXPECT_CALL(mock_cb_, setPayload(_)).WillOnce(Invoke([](const ProtobufWkt::Struct& payload) {
-    EXPECT_TRUE(TestUtility::protoEqual(payload, getExpectedPayload("my_payload")));
-  }));
+  EXPECT_CALL(mock_cb_, setExtractedData(_))
+      .WillOnce(Invoke([](const ProtobufWkt::Struct& payload) {
+        EXPECT_TRUE(TestUtility::protoEqual(payload, getExpectedPayload("my_payload")));
+      }));
 
-  EXPECT_CALL(mock_cb_, onComplete(Status::Ok)).Times(1);
+  EXPECT_CALL(mock_cb_, onComplete(Status::Ok));
 
   auto options = Http::AsyncClient::RequestOptions()
                      .setTimeout(std::chrono::milliseconds(5 * 1000))
                      .setParentSpan(parent_span_)
                      .setChildSpanName("JWT Remote PubKey Fetch");
-  EXPECT_CALL(mock_factory_ctx_.cluster_manager_.async_client_, send_(_, _, Eq(options))).Times(1);
+  EXPECT_CALL(mock_factory_ctx_.cluster_manager_.thread_local_cluster_.async_client_,
+              send_(_, _, Eq(options)));
 
   auto headers = Http::TestRequestHeaderMapImpl{
       {"Authorization", "Bearer " + std::string(GoodToken)},
@@ -100,7 +138,7 @@ TEST_F(ProviderVerifierTest, TestMissedJWT) {
   TestUtility::loadFromYaml(ExampleConfig, proto_config_);
   createVerifier();
 
-  EXPECT_CALL(mock_cb_, onComplete(Status::JwtMissed)).Times(1);
+  EXPECT_CALL(mock_cb_, onComplete(Status::JwtMissed));
 
   auto headers = Http::TestRequestHeaderMapImpl{{"sec-istio-auth-userinfo", ""}};
   context_ = Verifier::createContext(headers, parent_span_, &mock_cb_);
@@ -135,7 +173,7 @@ rules:
   TestUtility::loadFromYaml(config, proto_config_);
   createVerifier();
 
-  EXPECT_CALL(mock_cb_, onComplete(Status::JwtUnknownIssuer)).Times(1);
+  EXPECT_CALL(mock_cb_, onComplete(Status::JwtUnknownIssuer));
 
   auto headers = Http::TestRequestHeaderMapImpl{
       {"Authorization", "Bearer " + std::string(GoodToken)},
@@ -176,7 +214,7 @@ TEST_F(ProviderVerifierTest, TestRequiresNonexistentProvider) {
   TestUtility::loadFromYaml(ExampleConfig, proto_config_);
   proto_config_.mutable_rules(0)->mutable_requires()->set_provider_name("nosuchprovider");
 
-  EXPECT_THROW(FilterConfigImpl::create(proto_config_, "", mock_factory_ctx_), EnvoyException);
+  EXPECT_THROW(FilterConfigImpl(proto_config_, "", mock_factory_ctx_), EnvoyException);
 }
 
 } // namespace

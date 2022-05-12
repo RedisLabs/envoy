@@ -1,16 +1,14 @@
-#include "extensions/filters/listener/http_inspector/http_inspector.h"
+#include "source/extensions/filters/listener/http_inspector/http_inspector.h"
 
 #include "envoy/event/dispatcher.h"
 #include "envoy/network/listen_socket.h"
 #include "envoy/stats/scope.h"
 
-#include "common/api/os_sys_calls_impl.h"
-#include "common/common/assert.h"
-#include "common/common/macros.h"
-#include "common/http/headers.h"
-#include "common/http/utility.h"
-
-#include "extensions/transport_sockets/well_known_names.h"
+#include "source/common/api/os_sys_calls_impl.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/macros.h"
+#include "source/common/http/headers.h"
+#include "source/common/http/utility.h"
 
 #include "absl/strings/match.h"
 #include "absl/strings/str_split.h"
@@ -40,8 +38,7 @@ Network::FilterStatus Filter::onAccept(Network::ListenerFilterCallbacks& cb) {
   const Network::ConnectionSocket& socket = cb.socket();
 
   const absl::string_view transport_protocol = socket.detectedTransportProtocol();
-  if (!transport_protocol.empty() &&
-      transport_protocol != TransportSockets::TransportProtocolNames::get().RawBuffer) {
+  if (!transport_protocol.empty() && transport_protocol != "raw_buffer") {
     ENVOY_LOG(trace, "http inspector: cannot inspect http protocol with transport socket {}",
               transport_protocol);
     return Network::FilterStatus::Continue;
@@ -60,49 +57,36 @@ Network::FilterStatus Filter::onAccept(Network::ListenerFilterCallbacks& cb) {
     return Network::FilterStatus::Continue;
   case ParseState::Continue:
     // do nothing but create the event
-    ASSERT(file_event_ == nullptr);
-    file_event_ = cb.socket().ioHandle().createFileEvent(
+    cb.socket().ioHandle().initializeFileEvent(
         cb.dispatcher(),
         [this](uint32_t events) {
           ENVOY_LOG(trace, "http inspector event: {}", events);
-          // inspector is always peeking and can never determine EOF.
-          // Use this event type to avoid listener timeout on the OS supporting
-          // FileReadyType::Closed.
-          bool end_stream = events & Event::FileReadyType::Closed;
 
           const ParseState parse_state = onRead();
           switch (parse_state) {
           case ParseState::Error:
-            file_event_.reset();
+            cb_->socket().ioHandle().resetFileEvents();
             cb_->continueFilterChain(false);
             break;
           case ParseState::Done:
-            file_event_.reset();
+            cb_->socket().ioHandle().resetFileEvents();
             // Do not skip following listener filters.
             cb_->continueFilterChain(true);
             break;
           case ParseState::Continue:
-            if (end_stream) {
-              // Parser fails to determine http but the end of stream is reached. Fallback to
-              // non-http.
-              done(false);
-              file_event_.reset();
-              cb_->continueFilterChain(true);
-            }
             // do nothing but wait for the next event
             break;
           }
         },
-        Event::PlatformDefaultTriggerType,
-        Event::FileReadyType::Read | Event::FileReadyType::Closed);
+        Event::PlatformDefaultTriggerType, Event::FileReadyType::Read);
     return Network::FilterStatus::StopIteration;
   }
-  NOT_REACHED_GCOVR_EXCL_LINE;
+  PANIC_DUE_TO_CORRUPT_ENUM
 }
 
 ParseState Filter::onRead() {
   auto result = cb_->socket().ioHandle().recv(buf_, Config::MAX_INSPECT_SIZE, MSG_PEEK);
-  ENVOY_LOG(trace, "http inspector: recv: {}", result.rc_);
+  ENVOY_LOG(trace, "http inspector: recv: {}", result.return_value_);
   if (!result.ok()) {
     if (result.err_->getErrorCode() == Api::IoError::IoErrorCode::Again) {
       return ParseState::Continue;
@@ -111,8 +95,13 @@ ParseState Filter::onRead() {
     return ParseState::Error;
   }
 
+  // Remote closed
+  if (result.return_value_ == 0) {
+    return ParseState::Error;
+  }
+
   const auto parse_state =
-      parseHttpHeader(absl::string_view(reinterpret_cast<const char*>(buf_), result.rc_));
+      parseHttpHeader(absl::string_view(reinterpret_cast<const char*>(buf_), result.return_value_));
   switch (parse_state) {
   case ParseState::Continue:
     // do nothing but wait for the next event
@@ -124,7 +113,7 @@ ParseState Filter::onRead() {
     done(true);
     return ParseState::Done;
   }
-  NOT_REACHED_GCOVR_EXCL_LINE;
+  PANIC_DUE_TO_CORRUPT_ENUM;
 }
 
 ParseState Filter::parseHttpHeader(absl::string_view data) {
@@ -192,6 +181,7 @@ void Filter::done(bool success) {
       // TODO(yxue): use detected protocol from http inspector and support h2c token in HCM
       protocol = Http::Utility::AlpnNames::get().Http2c;
     }
+    ENVOY_LOG(trace, "http inspector: set application protocol to {}", protocol);
 
     cb_->socket().setRequestedApplicationProtocols({protocol});
   } else {

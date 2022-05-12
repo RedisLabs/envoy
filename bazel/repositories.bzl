@@ -4,11 +4,12 @@ load("@envoy_api//bazel:envoy_http_archive.bzl", "envoy_http_archive")
 load("@envoy_api//bazel:external_deps.bzl", "load_repository_locations")
 load(":repository_locations.bzl", "REPOSITORY_LOCATIONS_SPEC")
 load("@com_google_googleapis//:repository_rules.bzl", "switched_rules_by_language")
-load(":crates.bzl", "raze_fetch_remote_crates")
 
 PPC_SKIP_TARGETS = ["envoy.filters.http.lua"]
 
 WINDOWS_SKIP_TARGETS = [
+    "envoy.filters.http.language",
+    "envoy.filters.http.sxg",
     "envoy.tracers.dynamic_ot",
     "envoy.tracers.lightstep",
     "envoy.tracers.datadog",
@@ -52,25 +53,54 @@ _default_envoy_build_config = repository_rule(
     },
 )
 
-# Python dependencies.
-def _python_deps():
-    # TODO(htuch): convert these to pip3_import.
-    external_http_archive(
-        name = "com_github_twitter_common_lang",
-        build_file = "@envoy//bazel/external:twitter_common_lang.BUILD",
-    )
-    external_http_archive(
-        name = "com_github_twitter_common_rpc",
-        build_file = "@envoy//bazel/external:twitter_common_rpc.BUILD",
-    )
-    external_http_archive(
-        name = "com_github_twitter_common_finagle_thrift",
-        build_file = "@envoy//bazel/external:twitter_common_finagle_thrift.BUILD",
-    )
-    external_http_archive(
-        name = "six",
-        build_file = "@com_google_protobuf//third_party:six.BUILD",
-    )
+def _envoy_repo_impl(repository_ctx):
+    """This provides information about the Envoy repository
+
+    You can access the current version and path to the repository in .bzl/BUILD
+    files as follows:
+
+    ```starlark
+    load("@envoy_repo//:version.bzl", "VERSION")
+    ```
+
+    `VERSION` can be used to derive version-specific rules and can be passed
+    to the rules.
+
+    The `VERSION` and also the local `PATH` to the repo can be accessed in
+    python libraries/binaries. By adding `@envoy_repo` to `deps` they become
+    importable through the `envoy_repo` namespace.
+
+    As the `PATH` is local to the machine, it is generally only useful for
+    jobs that will run locally.
+
+    This can be useful for example, for tooling that needs to check the
+    repository, or to run bazel queries that cannot be run within the
+    constraints of a `genquery`.
+
+    """
+    repo_path = repository_ctx.path(repository_ctx.attr.envoy_root).dirname
+    version = repository_ctx.read(repo_path.get_child("VERSION.txt")).strip()
+    repository_ctx.file("version.bzl", "VERSION = '%s'" % version)
+    repository_ctx.file("path.bzl", "PATH = '%s'" % repo_path)
+    repository_ctx.file("__init__.py", "PATH = '%s'\nVERSION = '%s'" % (repo_path, version))
+    repository_ctx.file("WORKSPACE", "")
+    repository_ctx.file("BUILD", """
+load("@rules_python//python:defs.bzl", "py_library")
+
+py_library(name = "envoy_repo", srcs = ["__init__.py"], visibility = ["//visibility:public"])
+
+""")
+
+_envoy_repo = repository_rule(
+    implementation = _envoy_repo_impl,
+    attrs = {
+        "envoy_root": attr.label(default = "@envoy//:BUILD"),
+    },
+)
+
+def envoy_repo():
+    if "envoy_repo" not in native.existing_rules().keys():
+        _envoy_repo(name = "envoy_repo")
 
 # Bazel native C++ dependencies. For the dependencies that doesn't provide autoconf/automake builds.
 def _cc_deps():
@@ -97,10 +127,15 @@ def _go_deps(skip_targets):
         external_http_archive("bazel_gazelle")
 
 def _rust_deps():
-    external_http_archive("io_bazel_rules_rust")
-    raze_fetch_remote_crates()
+    external_http_archive(
+        "rules_rust",
+        patches = ["@envoy//bazel:rules_rust.patch"],
+    )
 
 def envoy_dependencies(skip_targets = []):
+    # Add a binding for repository variables.
+    envoy_repo()
+
     # Setup Envoy developer tools.
     envoy_dev_binding()
 
@@ -125,6 +160,7 @@ def envoy_dependencies(skip_targets = []):
     # The long repo names (`com_github_fmtlib_fmt` instead of `fmtlib`) are
     # semi-standard in the Bazel community, intended to avoid both duplicate
     # dependencies and name conflicts.
+    _com_github_axboe_liburing()
     _com_github_c_ares_c_ares()
     _com_github_circonus_labs_libcircllhist()
     _com_github_cyan4973_xxhash()
@@ -136,52 +172,73 @@ def envoy_dependencies(skip_targets = []):
     _com_github_google_benchmark()
     _com_github_google_jwt_verify()
     _com_github_google_libprotobuf_mutator()
+    _com_github_google_libsxg()
     _com_github_google_tcmalloc()
     _com_github_gperftools_gperftools()
     _com_github_grpc_grpc()
+    _com_github_unicode_org_icu()
+    _com_github_intel_ipp_crypto_crypto_mb()
     _com_github_jbeder_yaml_cpp()
     _com_github_libevent_libevent()
     _com_github_luajit_luajit()
     _com_github_moonjit_moonjit()
     _com_github_nghttp2_nghttp2()
+    _com_github_skyapm_cpp2sky()
     _com_github_nodejs_http_parser()
+    _com_github_alibaba_hessian2_codec()
     _com_github_tencent_rapidjson()
+    _com_github_nlohmann_json()
+    _com_github_ncopa_suexec()
     _com_google_absl()
     _com_google_googletest()
     _com_google_protobuf()
     _io_opencensus_cpp()
     _com_github_curl()
     _com_github_envoyproxy_sqlparser()
-    _com_googlesource_chromium_v8()
-    _com_googlesource_quiche()
+    _v8()
+    _com_googlesource_chromium_base_trace_event_common()
+    _com_googlesource_chromium_zlib()
+    _com_github_google_quiche()
     _com_googlesource_googleurl()
     _com_lightstep_tracer_cpp()
+    _io_hyperscan()
     _io_opentracing_cpp()
+    _net_colm_open_source_ragel()
     _net_zlib()
     _com_github_zlib_ng_zlib_ng()
+    _org_boost()
+    _org_brotli()
+    _com_github_facebook_zstd()
+    _re2()
     _upb()
     _proxy_wasm_cpp_sdk()
     _proxy_wasm_cpp_host()
-    _emscripten_toolchain()
-    external_http_archive("com_googlesource_code_re2")
+    _emsdk()
+    _rules_fuzzing()
+    external_http_archive("proxy_wasm_rust_sdk")
     _com_google_cel_cpp()
+    _com_github_google_perfetto()
     external_http_archive("com_github_google_flatbuffers")
     external_http_archive("bazel_toolchains")
     external_http_archive("bazel_compdb")
     external_http_archive("envoy_build_tools")
     external_http_archive("rules_cc")
+    external_http_archive("rules_pkg")
+    _com_github_fdio_vpp_vcl()
 
     # Unconditional, since we use this only for compiler-agnostic fuzzing utils.
     _org_llvm_releases_compiler_rt()
 
-    _python_deps()
     _cc_deps()
     _go_deps(skip_targets)
     _rust_deps()
     _kafka_deps()
 
     _org_llvm_llvm()
+    _com_github_wamr()
     _com_github_wavm_wavm()
+    _com_github_wasmtime()
+    _com_github_wasm_c_api()
 
     switched_rules_by_language(
         name = "com_google_googleapis_imports",
@@ -222,6 +279,16 @@ def _com_github_circonus_labs_libcircllhist():
         actual = "@com_github_circonus_labs_libcircllhist//:libcircllhist",
     )
 
+def _com_github_axboe_liburing():
+    external_http_archive(
+        name = "com_github_axboe_liburing",
+        build_file_content = BUILD_ALL_CONTENT,
+    )
+    native.bind(
+        name = "uring",
+        actual = "@envoy//bazel/foreign_cc:liburing",
+    )
+
 def _com_github_c_ares_c_ares():
     external_http_archive(
         name = "com_github_c_ares_c_ares",
@@ -257,11 +324,6 @@ def _com_github_mirror_tclap():
         name = "com_github_mirror_tclap",
         build_file = "@envoy//bazel/external:tclap.BUILD",
         patch_args = ["-p1"],
-        # If and when we pick up tclap 1.4 or later release,
-        # this entire issue was refactored away 6 years ago;
-        # https://sourceforge.net/p/tclap/code/ci/5d4ffbf2db794af799b8c5727fb6c65c079195ac/
-        # https://github.com/envoyproxy/envoy/pull/8572#discussion_r337554195
-        patches = ["@envoy//bazel:tclap-win64-ull-sizet.patch"],
     )
     native.bind(
         name = "tclap",
@@ -303,6 +365,31 @@ def _com_github_google_libprotobuf_mutator():
         build_file = "@envoy//bazel/external:libprotobuf_mutator.BUILD",
     )
 
+def _com_github_google_libsxg():
+    external_http_archive(
+        name = "com_github_google_libsxg",
+        build_file_content = BUILD_ALL_CONTENT,
+    )
+
+    native.bind(
+        name = "libsxg",
+        actual = "@envoy//bazel/foreign_cc:libsxg",
+    )
+
+def _com_github_unicode_org_icu():
+    external_http_archive(
+        name = "com_github_unicode_org_icu",
+        patches = ["@envoy//bazel/foreign_cc:icu.patch"],
+        patch_args = ["-p1"],
+        build_file_content = BUILD_ALL_CONTENT,
+    )
+
+def _com_github_intel_ipp_crypto_crypto_mb():
+    external_http_archive(
+        name = "com_github_intel_ipp_crypto_crypto_mb",
+        build_file_content = BUILD_ALL_CONTENT,
+    )
+
 def _com_github_jbeder_yaml_cpp():
     external_http_archive(
         name = "com_github_jbeder_yaml_cpp",
@@ -320,6 +407,16 @@ def _com_github_libevent_libevent():
     native.bind(
         name = "event",
         actual = "@envoy//bazel/foreign_cc:event",
+    )
+
+def _net_colm_open_source_ragel():
+    external_http_archive(
+        name = "net_colm_open_source_ragel",
+        build_file_content = BUILD_ALL_CONTENT,
+    )
+    native.bind(
+        name = "ragel",
+        actual = "@envoy//bazel/foreign_cc:ragel",
     )
 
 def _net_zlib():
@@ -345,6 +442,53 @@ def _com_github_zlib_ng_zlib_ng():
     external_http_archive(
         name = "com_github_zlib_ng_zlib_ng",
         build_file_content = BUILD_ALL_CONTENT,
+        patch_args = ["-p1"],
+        patches = ["@envoy//bazel/foreign_cc:zlib_ng.patch"],
+    )
+
+# Boost in general is not approved for Envoy use, and the header-only
+# dependency is only for the Hyperscan contrib package.
+def _org_boost():
+    external_http_archive(
+        name = "org_boost",
+        build_file_content = """
+filegroup(
+    name = "header",
+    srcs = glob([
+        "boost/**/*.h",
+        "boost/**/*.hpp",
+        "boost/**/*.ipp",
+    ]),
+    visibility = ["@envoy//contrib/hyperscan/matching/input_matchers/source:__pkg__"],
+)
+""",
+    )
+
+# If you're looking for envoy-filter-example / envoy_filter_example
+# the hash is in ci/filter_example_setup.sh
+
+def _org_brotli():
+    external_http_archive(
+        name = "org_brotli",
+    )
+    native.bind(
+        name = "brotlienc",
+        actual = "@org_brotli//:brotlienc",
+    )
+    native.bind(
+        name = "brotlidec",
+        actual = "@org_brotli//:brotlidec",
+    )
+
+def _com_github_facebook_zstd():
+    external_http_archive(
+        name = "com_github_facebook_zstd",
+        build_file_content = BUILD_ALL_CONTENT,
+    )
+
+    native.bind(
+        name = "zstd",
+        actual = "@envoy//bazel/foreign_cc:zstd",
     )
 
 def _com_google_cel_cpp():
@@ -370,13 +514,25 @@ cc_library(
         patches = ["@envoy//bazel:antlr.patch"],
     )
 
+def _com_github_google_perfetto():
+    external_http_archive(
+        name = "com_github_google_perfetto",
+        build_file_content = """
+package(default_visibility = ["//visibility:public"])
+cc_library(
+    name = "perfetto",
+    srcs = ["perfetto.cc"],
+    hdrs = ["perfetto.h"],
+)
+""",
+    )
+
 def _com_github_nghttp2_nghttp2():
     external_http_archive(
         name = "com_github_nghttp2_nghttp2",
         build_file_content = BUILD_ALL_CONTENT,
         patch_args = ["-p1"],
-        # This patch cannot be picked up due to ABI rules. Better
-        # solve is likely at the next version-major. Discussion at;
+        # This patch cannot be picked up due to ABI rules. Discussion at;
         # https://github.com/nghttp2/nghttp2/pull/1395
         # https://github.com/envoyproxy/envoy/pull/8572#discussion_r334067786
         patches = ["@envoy//bazel/foreign_cc:nghttp2.patch"],
@@ -384,6 +540,14 @@ def _com_github_nghttp2_nghttp2():
     native.bind(
         name = "nghttp2",
         actual = "@envoy//bazel/foreign_cc:nghttp2",
+    )
+
+def _io_hyperscan():
+    external_http_archive(
+        name = "io_hyperscan",
+        build_file_content = BUILD_ALL_CONTENT,
+        patch_args = ["-p1"],
+        patches = ["@envoy//bazel/foreign_cc:hyperscan.patch"],
     )
 
 def _io_opentracing_cpp():
@@ -416,24 +580,59 @@ def _com_github_datadog_dd_opentracing_cpp():
         actual = "@com_github_datadog_dd_opentracing_cpp//:dd_opentracing_cpp",
     )
 
+def _com_github_skyapm_cpp2sky():
+    external_http_archive(
+        name = "com_github_skyapm_cpp2sky",
+    )
+    external_http_archive(
+        name = "skywalking_data_collect_protocol",
+    )
+    native.bind(
+        name = "cpp2sky",
+        actual = "@com_github_skyapm_cpp2sky//source:cpp2sky_data_lib",
+    )
+
 def _com_github_tencent_rapidjson():
     external_http_archive(
         name = "com_github_tencent_rapidjson",
         build_file = "@envoy//bazel/external:rapidjson.BUILD",
     )
+
+def _com_github_nlohmann_json():
+    external_http_archive(
+        name = "com_github_nlohmann_json",
+        build_file = "@envoy//bazel/external:json.BUILD",
+    )
     native.bind(
-        name = "rapidjson",
-        actual = "@com_github_tencent_rapidjson//:rapidjson",
+        name = "json",
+        actual = "@com_github_nlohmann_json//:json",
     )
 
 def _com_github_nodejs_http_parser():
-    external_http_archive(
-        name = "com_github_nodejs_http_parser",
-        build_file = "@envoy//bazel/external:http-parser.BUILD",
-    )
     native.bind(
         name = "http_parser",
-        actual = "@com_github_nodejs_http_parser//:http_parser",
+        actual = "@envoy//bazel/external/http_parser",
+    )
+
+def _com_github_alibaba_hessian2_codec():
+    external_http_archive("com_github_alibaba_hessian2_codec")
+    native.bind(
+        name = "hessian2_codec_object_codec_lib",
+        actual = "@com_github_alibaba_hessian2_codec//hessian2/basic_codec:object_codec_lib",
+    )
+    native.bind(
+        name = "hessian2_codec_codec_impl",
+        actual = "@com_github_alibaba_hessian2_codec//hessian2:codec_impl_lib",
+    )
+
+def _com_github_ncopa_suexec():
+    external_http_archive(
+        name = "com_github_ncopa_suexec",
+        build_file = "@envoy//bazel/external:su-exec.BUILD",
+    )
+    native.bind(
+        name = "su-exec",
+        actual = "@com_github_ncopa_suexec//:su-exec",
     )
 
 def _com_google_googletest():
@@ -448,7 +647,11 @@ def _com_google_googletest():
 # pull in more bits of abseil as needed, and is now the preferred
 # method for pure Bazel deps.
 def _com_google_absl():
-    external_http_archive("com_google_absl")
+    external_http_archive(
+        name = "com_google_absl",
+        patches = ["@envoy//bazel:abseil.patch"],
+        patch_args = ["-p1"],
+    )
     native.bind(
         name = "abseil_any",
         actual = "@com_google_absl//absl/types:any",
@@ -549,9 +752,16 @@ def _com_google_absl():
         name = "abseil_status",
         actual = "@com_google_absl//absl/status",
     )
+    native.bind(
+        name = "abseil_cleanup",
+        actual = "@com_google_absl//absl/cleanup:cleanup",
+    )
 
 def _com_google_protobuf():
-    external_http_archive("rules_python")
+    external_http_archive(
+        name = "rules_python",
+    )
+
     external_http_archive(
         "com_google_protobuf",
         patches = ["@envoy//bazel:protobuf.patch"],
@@ -630,12 +840,10 @@ def _com_github_curl():
         build_file_content = BUILD_ALL_CONTENT + """
 cc_library(name = "curl", visibility = ["//visibility:public"], deps = ["@envoy//bazel/foreign_cc:curl"])
 """,
-        # Patch curl 7.72.0 due to CMake's problematic implementation of policy `CMP0091`
-        # introduced in CMake 3.15 and then deprecated in CMake 3.18. Curl forcing the CMake
-        # ruleset to 3.16 breaks the Envoy windows fastbuild target.
-        # Also cure a fatal assumption creating a static library using LLVM `lld-link.exe`
-        # adding dynamic link flags, which breaks the Envoy clang-cl library archive step.
-        # Upstream patch submitted: https://github.com/curl/curl/pull/6050
+        # Patch curl 7.74.0 and later due to CMake's problematic implementation of policy `CMP0091`
+        # and introduction of libidn2 dependency which is inconsistently available and must
+        # not be a dynamic dependency on linux.
+        # Upstream patches submitted: https://github.com/curl/curl/pull/6050 & 6362
         # TODO(https://github.com/envoyproxy/envoy/issues/11816): This patch is obsoleted
         # by elimination of the curl dependency.
         patches = ["@envoy//bazel/foreign_cc:curl.patch"],
@@ -646,52 +854,72 @@ cc_library(name = "curl", visibility = ["//visibility:public"], deps = ["@envoy/
         actual = "@envoy//bazel/foreign_cc:curl",
     )
 
-def _com_googlesource_chromium_v8():
-    external_genrule_repository(
-        name = "com_googlesource_chromium_v8",
-        genrule_cmd_file = "@envoy//bazel/external:wee8.genrule_cmd",
-        build_file = "@envoy//bazel/external:wee8.BUILD",
-        patches = ["@envoy//bazel/external:wee8.patch"],
+def _v8():
+    external_http_archive(
+        name = "v8",
+        patches = ["@envoy//bazel:v8.patch"],
+        patch_args = ["-p1"],
     )
     native.bind(
         name = "wee8",
-        actual = "@com_googlesource_chromium_v8//:wee8",
+        actual = "@v8//:wee8",
     )
 
-def _com_googlesource_quiche():
-    external_genrule_repository(
-        name = "com_googlesource_quiche",
-        genrule_cmd_file = "@envoy//bazel/external:quiche.genrule_cmd",
+def _com_googlesource_chromium_base_trace_event_common():
+    external_http_archive(
+        name = "com_googlesource_chromium_base_trace_event_common",
+        build_file = "@v8//:bazel/BUILD.trace_event_common",
+    )
+    native.bind(
+        name = "base_trace_event_common",
+        actual = "@com_googlesource_chromium_base_trace_event_common//:trace_event_common",
+    )
+
+def _com_googlesource_chromium_zlib():
+    external_http_archive(
+        name = "com_googlesource_chromium_zlib",
+        build_file = "@v8//:bazel/BUILD.zlib",
+    )
+    native.bind(
+        name = "zlib_compression_utils",
+        actual = "@com_googlesource_chromium_zlib//:zlib_compression_utils",
+    )
+
+def _com_github_google_quiche():
+    external_http_archive(
+        name = "com_github_google_quiche",
         build_file = "@envoy//bazel/external:quiche.BUILD",
     )
     native.bind(
         name = "quiche_common_platform",
-        actual = "@com_googlesource_quiche//:quiche_common_platform",
+        actual = "@com_github_google_quiche//:quiche_common_platform",
+    )
+    native.bind(
+        name = "quiche_http2_adapter",
+        actual = "@com_github_google_quiche//:http2_adapter",
     )
     native.bind(
         name = "quiche_http2_platform",
-        actual = "@com_googlesource_quiche//:http2_platform",
+        actual = "@com_github_google_quiche//:http2_platform",
     )
     native.bind(
         name = "quiche_spdy_platform",
-        actual = "@com_googlesource_quiche//:spdy_platform",
+        actual = "@com_github_google_quiche//:spdy_platform",
     )
     native.bind(
         name = "quiche_quic_platform",
-        actual = "@com_googlesource_quiche//:quic_platform",
+        actual = "@com_github_google_quiche//:quic_platform",
     )
     native.bind(
         name = "quiche_quic_platform_base",
-        actual = "@com_googlesource_quiche//:quic_platform_base",
+        actual = "@com_github_google_quiche//:quic_platform_base",
     )
 
 def _com_googlesource_googleurl():
     external_http_archive(
         name = "com_googlesource_googleurl",
-    )
-    native.bind(
-        name = "googleurl",
-        actual = "@com_googlesource_googleurl//url:url",
+        patches = ["@envoy//bazel/external:googleurl.patch"],
+        patch_args = ["-p1"],
     )
 
 def _org_llvm_releases_compiler_rt():
@@ -743,12 +971,36 @@ def _com_github_grpc_grpc():
         actual = "@com_github_grpc_grpc//test/core/tsi/alts/fake_handshaker:transport_security_common_proto",
     )
 
-def _upb():
-    external_http_archive(
-        name = "upb",
-        patches = ["@envoy//bazel:upb.patch"],
-        patch_args = ["-p1"],
+    native.bind(
+        name = "upb_lib_descriptor",
+        actual = "@upb//:descriptor_upb_proto",
     )
+
+    native.bind(
+        name = "upb_lib_descriptor_reflection",
+        actual = "@upb//:descriptor_upb_proto_reflection",
+    )
+
+    native.bind(
+        name = "upb_textformat_lib",
+        actual = "@upb//:textformat",
+    )
+
+    native.bind(
+        name = "upb_json_lib",
+        actual = "@upb//:json",
+    )
+
+def _re2():
+    external_http_archive("com_googlesource_code_re2")
+
+    native.bind(
+        name = "re2",
+        actual = "@com_googlesource_code_re2//:re2",
+    )
+
+def _upb():
+    external_http_archive(name = "upb")
 
     native.bind(
         name = "upb_lib",
@@ -759,22 +1011,10 @@ def _proxy_wasm_cpp_sdk():
     external_http_archive(name = "proxy_wasm_cpp_sdk")
 
 def _proxy_wasm_cpp_host():
-    external_http_archive(
-        name = "proxy_wasm_cpp_host",
-        build_file = "@envoy//bazel/external:proxy_wasm_cpp_host.BUILD",
-    )
+    external_http_archive(name = "proxy_wasm_cpp_host")
 
-def _emscripten_toolchain():
-    external_http_archive(
-        name = "emscripten_toolchain",
-        build_file_content = _build_all_content(exclude = [
-            "upstream/emscripten/cache/is_vanilla.txt",
-            ".emscripten_sanity",
-        ]),
-        patch_cmds = [
-            "[[ \"$(uname -m)\" == \"x86_64\" ]] && ./emsdk install 1.39.6-upstream && ./emsdk activate --embedded 1.39.6-upstream || true",
-        ],
-    )
+def _emsdk():
+    external_http_archive(name = "emsdk")
 
 def _com_github_google_jwt_verify():
     external_http_archive("com_github_google_jwt_verify")
@@ -782,6 +1022,11 @@ def _com_github_google_jwt_verify():
     native.bind(
         name = "jwt_verify_lib",
         actual = "@com_github_google_jwt_verify//:jwt_verify_lib",
+    )
+
+    native.bind(
+        name = "simple_lru_cache_lib",
+        actual = "@com_github_google_jwt_verify//:simple_lru_cache_lib",
     )
 
 def _com_github_luajit_luajit():
@@ -844,6 +1089,16 @@ def _org_llvm_llvm():
         actual = "@envoy//bazel/foreign_cc:llvm",
     )
 
+def _com_github_wamr():
+    external_http_archive(
+        name = "com_github_wamr",
+        build_file_content = BUILD_ALL_CONTENT,
+    )
+    native.bind(
+        name = "wamr",
+        actual = "@envoy//bazel/foreign_cc:wamr",
+    )
+
 def _com_github_wavm_wavm():
     external_http_archive(
         name = "com_github_wavm_wavm",
@@ -852,6 +1107,40 @@ def _com_github_wavm_wavm():
     native.bind(
         name = "wavm",
         actual = "@envoy//bazel/foreign_cc:wavm",
+    )
+
+def _com_github_wasmtime():
+    external_http_archive(
+        name = "com_github_wasmtime",
+        build_file = "@envoy//bazel/external:wasmtime.BUILD",
+    )
+
+def _com_github_wasm_c_api():
+    external_http_archive(
+        name = "com_github_wasm_c_api",
+        build_file = "@envoy//bazel/external:wasm-c-api.BUILD",
+    )
+    native.bind(
+        name = "wasmtime",
+        actual = "@com_github_wasm_c_api//:wasmtime_lib",
+    )
+
+    # This isn't needed in builds with a single Wasm engine, but "bazel query"
+    # complains about a missing dependency, so point it at the regular target.
+    native.bind(
+        name = "prefixed_wasmtime",
+        actual = "@com_github_wasm_c_api//:wasmtime_lib",
+    )
+
+def _rules_fuzzing():
+    external_http_archive(
+        name = "rules_fuzzing",
+        repo_mapping = {
+            "@fuzzing_py_deps": "@fuzzing_pip3",
+        },
+        # TODO(asraa): Try this fix for OSS-Fuzz build failure on tar command.
+        patch_args = ["-p1"],
+        patches = ["@envoy//bazel:rules_fuzzing.patch"],
     )
 
 def _kafka_deps():
@@ -872,7 +1161,17 @@ filegroup(
     external_http_archive(
         name = "kafka_source",
         build_file_content = KAFKASOURCE_BUILD_CONTENT,
-        patches = ["@envoy//bazel/external:kafka_int32.patch"],
+    )
+
+    # This archive provides Kafka C/CPP client used by mesh filter to communicate with upstream
+    # Kafka clusters.
+    external_http_archive(
+        name = "edenhill_librdkafka",
+        build_file_content = BUILD_ALL_CONTENT,
+    )
+    native.bind(
+        name = "librdkafka",
+        actual = "@envoy//bazel/foreign_cc:librdkafka",
     )
 
     # This archive provides Kafka (and Zookeeper) binaries, that are used during Kafka integration
@@ -887,6 +1186,13 @@ filegroup(
     external_http_archive(
         name = "kafka_python_client",
         build_file_content = BUILD_ALL_CONTENT,
+    )
+
+def _com_github_fdio_vpp_vcl():
+    external_http_archive(
+        name = "com_github_fdio_vpp_vcl",
+        build_file_content = BUILD_ALL_CONTENT,
+        patches = ["@envoy//bazel/foreign_cc:vpp_vcl.patch"],
     )
 
 def _foreign_cc_dependencies():

@@ -9,12 +9,13 @@
 
 #include <functional>
 
-#include "common/common/assert.h"
-#include "common/common/logger.h"
-#include "common/http/exception.h"
-#include "common/http/header_map_impl.h"
-#include "common/http/http1/codec_impl.h"
-#include "common/http/http2/codec_impl.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/logger.h"
+#include "source/common/http/exception.h"
+#include "source/common/http/header_map_impl.h"
+#include "source/common/http/http1/codec_impl.h"
+#include "source/common/http/http2/codec_impl.h"
+#include "source/common/http/conn_manager_utility.h"
 
 #include "test/common/http/codec_impl_fuzz.pb.validate.h"
 #include "test/common/http/http2/codec_impl_test_util.h"
@@ -22,6 +23,7 @@
 #include "test/fuzz/utility.h"
 #include "test/mocks/http/mocks.h"
 #include "test/mocks/network/mocks.h"
+#include "test/test_common/test_runtime.h"
 
 #include "gmock/gmock.h"
 
@@ -110,6 +112,7 @@ public:
     // TODO(mattklein123): Split this more clearly into request and response directional state.
     RequestEncoder* request_encoder_;
     ResponseEncoder* response_encoder_;
+    TestRequestHeaderMapImpl request_headers_;
     NiceMock<MockResponseDecoder> response_decoder_;
     NiceMock<MockRequestDecoder> request_decoder_;
     NiceMock<MockStreamCallbacks> stream_callbacks_;
@@ -117,6 +120,7 @@ public:
     bool local_closed_{false};
     bool remote_closed_{false};
     uint32_t read_disable_count_{};
+    bool created_schedulable_callback_{false};
 
     bool isLocalOpen() const { return !local_closed_; }
 
@@ -133,12 +137,35 @@ public:
         stream_state_ = StreamState::Closed;
       }
     }
+
+    void closeLocalAndRemote() {
+      remote_closed_ = true;
+      local_closed_ = true;
+      stream_state_ = StreamState::Closed;
+    }
+
   } request_, response_;
 
+  // Encapsulates configuration, connections information used in the HttpStream.
+  struct ConnectionContext {
+    MockConnectionManagerConfig* conn_manager_config_;
+    NiceMock<Network::MockConnection>& server_connection_;
+    NiceMock<Network::MockConnection>& client_connection_;
+
+    ConnectionContext(MockConnectionManagerConfig* conn_manager_config,
+                      NiceMock<Network::MockConnection>& server_connection,
+                      NiceMock<Network::MockConnection>& client_connection)
+        : conn_manager_config_(conn_manager_config), server_connection_(server_connection),
+          client_connection_(client_connection) {}
+  };
+
   HttpStream(ClientConnection& client, const TestRequestHeaderMapImpl& request_headers,
-             bool end_stream, StreamResetCallbackFn stream_reset_callback)
-      : stream_reset_callback_(stream_reset_callback) {
+             bool end_stream, StreamResetCallbackFn stream_reset_callback,
+             ConnectionContext& context)
+      : http_protocol_(client.protocol()), stream_reset_callback_(stream_reset_callback),
+        context_(context) {
     request_.request_encoder_ = &client.newStream(response_.response_decoder_);
+
     ON_CALL(request_.stream_callbacks_, onResetStream(_, _))
         .WillByDefault(InvokeWithoutArgs([this] {
           ENVOY_LOG_MISC(trace, "reset request for stream index {}", stream_index_);
@@ -173,16 +200,16 @@ public:
       request_.closeRemote();
     }));
     ON_CALL(response_.response_decoder_, decodeHeaders_(_, true))
-        .WillByDefault(InvokeWithoutArgs([this] { response_.closeRemote(); }));
+        .WillByDefault(InvokeWithoutArgs([this] { response_.closeLocalAndRemote(); }));
     ON_CALL(response_.response_decoder_, decodeData(_, true))
-        .WillByDefault(InvokeWithoutArgs([this] { response_.closeRemote(); }));
+        .WillByDefault(InvokeWithoutArgs([this] { response_.closeLocalAndRemote(); }));
     ON_CALL(response_.response_decoder_, decodeTrailers_(_))
-        .WillByDefault(InvokeWithoutArgs([this] { response_.closeRemote(); }));
+        .WillByDefault(InvokeWithoutArgs([this] { response_.closeLocalAndRemote(); }));
     if (!end_stream) {
       request_.request_encoder_->getStream().addCallbacks(request_.stream_callbacks_);
     }
-
-    request_.request_encoder_->encodeHeaders(request_headers, end_stream);
+    request_.request_headers_ = request_headers;
+    request_.request_encoder_->encodeHeaders(request_headers, end_stream).IgnoreError();
     request_.stream_state_ = end_stream ? StreamState::Closed : StreamState::PendingDataOrTrailers;
     response_.stream_state_ = StreamState::PendingHeaders;
   }
@@ -205,7 +232,7 @@ public:
         auto headers =
             fromSanitizedHeaders<TestResponseHeaderMapImpl>(directional_action.continue_headers());
         headers.setReferenceKey(Headers::get().Status, "100");
-        state.response_encoder_->encode100ContinueHeaders(headers);
+        state.response_encoder_->encode1xxHeaders(headers);
       }
       break;
     }
@@ -214,14 +241,19 @@ public:
         if (response) {
           auto headers =
               fromSanitizedHeaders<TestResponseHeaderMapImpl>(directional_action.headers());
+          ConnectionManagerUtility::mutateResponseHeaders(headers, &request_.request_headers_,
+                                                          *context_.conn_manager_config_,
+                                                          /*via=*/"", stream_info_, /*node_id=*/"");
           if (headers.Status() == nullptr) {
             headers.setReferenceKey(Headers::get().Status, "200");
           }
           state.response_encoder_->encodeHeaders(headers, end_stream);
         } else {
-          state.request_encoder_->encodeHeaders(
-              fromSanitizedHeaders<TestRequestHeaderMapImpl>(directional_action.headers()),
-              end_stream);
+          state.request_encoder_
+              ->encodeHeaders(
+                  fromSanitizedHeaders<TestRequestHeaderMapImpl>(directional_action.headers()),
+                  end_stream)
+              .IgnoreError();
         }
         if (end_stream) {
           state.closeLocal();
@@ -309,12 +341,35 @@ public:
         } else {
           --state.read_disable_count_;
         }
+
         StreamEncoder* encoder;
+        Event::MockDispatcher* dispatcher{nullptr};
+
         if (response) {
           encoder = state.response_encoder_;
+          dispatcher = &context_.server_connection_.dispatcher_;
         } else {
           encoder = state.request_encoder_;
+          dispatcher = &context_.client_connection_.dispatcher_;
         }
+
+        // With this feature enabled for http2 we end up creating a schedulable
+        // callback the first time we re-enable reading as it's used to process
+        // the backed up data.
+        if (Runtime::runtimeFeatureEnabled(Runtime::defer_processing_backedup_streams)) {
+          const bool expecting_schedulable_callback_creation =
+              http_protocol_ == Protocol::Http2 && state.read_disable_count_ == 0 && !disable &&
+              !state.created_schedulable_callback_;
+
+          if (expecting_schedulable_callback_creation) {
+            ASSERT(dispatcher != nullptr);
+            state.created_schedulable_callback_ = true;
+            // The unique pointer of this object will be returned in createSchedulableCallback_ of
+            // dispatcher, so there is no risk of object leak.
+            new Event::MockSchedulableCallback(dispatcher);
+          }
+        }
+
         encoder->getStream().readDisable(disable);
       }
       break;
@@ -354,7 +409,13 @@ public:
         }
       }
       // Perform the stream action.
-      directionalAction(request_, stream_action.request());
+      // The request_.request_encoder_ is initialized from the response_.response_decoder_.
+      // Fuzz test codec_impl_fuzz_test-5766628005642240 created a situation where the response
+      // stream was in closed state leading to the state.request_encoder_ in directionalAction()
+      // kData case no longer being a valid address.
+      if (response_.stream_state_ != HttpStream::StreamState::Closed) {
+        directionalAction(request_, stream_action.request());
+      }
       break;
     }
     case test::common::http::StreamAction::kResponse: {
@@ -376,8 +437,11 @@ public:
            response_.stream_state_ != StreamState::Closed;
   }
 
+  Protocol http_protocol_;
   int32_t stream_index_{-1};
   StreamResetCallbackFn stream_reset_callback_;
+  ConnectionContext context_;
+  testing::NiceMock<StreamInfo::MockStreamInfo> stream_info_;
 };
 
 // Buffer between client and server H1/H2 codecs. This models each write operation
@@ -453,7 +517,7 @@ using HttpStreamPtr = std::unique_ptr<HttpStream>;
 
 namespace {
 
-enum class HttpVersion { Http1, Http2 };
+enum class HttpVersion { Http1, Http2Nghttp2, Http2WrappedNghttp2, Http2Oghttp2 };
 
 void codecFuzz(const test::common::http::CodecImplFuzzTestCase& input, HttpVersion http_version) {
   Stats::IsolatedStoreImpl stats_store;
@@ -465,17 +529,42 @@ void codecFuzz(const test::common::http::CodecImplFuzzTestCase& input, HttpVersi
   NiceMock<Network::MockConnection> server_connection;
   NiceMock<MockServerConnectionCallbacks> server_callbacks;
   NiceMock<Random::MockRandomGenerator> random;
+  NiceMock<MockConnectionManagerConfig> conn_manager_config;
   uint32_t max_request_headers_kb = Http::DEFAULT_MAX_REQUEST_HEADERS_KB;
   uint32_t max_request_headers_count = Http::DEFAULT_MAX_HEADERS_COUNT;
   uint32_t max_response_headers_count = Http::DEFAULT_MAX_HEADERS_COUNT;
   const envoy::config::core::v3::HttpProtocolOptions::HeadersWithUnderscoresAction
       headers_with_underscores_action = envoy::config::core::v3::HttpProtocolOptions::ALLOW;
 
+  HttpStream::ConnectionContext connection_context(&conn_manager_config, server_connection,
+                                                   client_connection);
+  TestScopedRuntime scoped_runtime;
+
   Http1::CodecStats::AtomicPtr http1_stats;
   Http2::CodecStats::AtomicPtr http2_stats;
   ClientConnectionPtr client;
   ServerConnectionPtr server;
-  const bool http2 = http_version == HttpVersion::Http2;
+  bool http2 = false;
+
+  switch (http_version) {
+  case HttpVersion::Http1:
+    break;
+  case HttpVersion::Http2Nghttp2:
+    http2 = true;
+    scoped_runtime.mergeValues({{"envoy.reloadable_features.http2_new_codec_wrapper", "false"}});
+    scoped_runtime.mergeValues({{"envoy.reloadable_features.http2_use_oghttp2", "false"}});
+    break;
+  case HttpVersion::Http2WrappedNghttp2:
+    http2 = true;
+    scoped_runtime.mergeValues({{"envoy.reloadable_features.http2_new_codec_wrapper", "true"}});
+    scoped_runtime.mergeValues({{"envoy.reloadable_features.http2_use_oghttp2", "false"}});
+    break;
+  case HttpVersion::Http2Oghttp2:
+    http2 = true;
+    scoped_runtime.mergeValues({{"envoy.reloadable_features.http2_new_codec_wrapper", "true"}});
+    scoped_runtime.mergeValues({{"envoy.reloadable_features.http2_use_oghttp2", "true"}});
+    break;
+  }
 
   if (http2) {
     client = std::make_unique<Http2::ClientConnectionImpl>(
@@ -585,12 +674,14 @@ void codecFuzz(const test::common::http::CodecImplFuzzTestCase& input, HttpVersi
       HttpStreamPtr stream = std::make_unique<HttpStream>(
           *client,
           fromSanitizedHeaders<TestRequestHeaderMapImpl>(action.new_stream().request_headers()),
-          action.new_stream().end_stream(), [&should_close_connection, http2]() {
+          action.new_stream().end_stream(),
+          [&should_close_connection, http2]() {
             // HTTP/1 codec has stream reset implying connection close.
             if (!http2) {
               should_close_connection = true;
             }
-          });
+          },
+          connection_context);
       LinkedList::moveIntoListBack(std::move(stream), pending_streams);
       break;
     }
@@ -659,6 +750,10 @@ void codecFuzz(const test::common::http::CodecImplFuzzTestCase& input, HttpVersi
     dynamic_cast<Http2::ClientConnectionImpl&>(*client).goAway();
     dynamic_cast<Http2::ServerConnectionImpl&>(*server).goAway();
   }
+
+  // Run deletion as would happen on the dispatchers to avoid inversion of
+  // lifetimes of dispatcher and connection.
+  server_connection.dispatcher_.to_delete_.clear();
 }
 
 } // namespace
@@ -669,7 +764,9 @@ DEFINE_PROTO_FUZZER(const test::common::http::CodecImplFuzzTestCase& input) {
     // Validate input early.
     TestUtility::validate(input);
     codecFuzz(input, HttpVersion::Http1);
-    codecFuzz(input, HttpVersion::Http2);
+    codecFuzz(input, HttpVersion::Http2Nghttp2);
+    codecFuzz(input, HttpVersion::Http2WrappedNghttp2);
+    codecFuzz(input, HttpVersion::Http2Oghttp2);
   } catch (const EnvoyException& e) {
     ENVOY_LOG_MISC(debug, "EnvoyException: {}", e.what());
   }

@@ -43,7 +43,11 @@ A sample filter configuration could be:
   clusters:
     - name: ext-authz
       type: static
-      http2_protocol_options: {}
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
       load_assignment:
         cluster_name: ext-authz
         endpoints:
@@ -53,6 +57,30 @@ A sample filter configuration could be:
                 socket_address:
                   address: 127.0.0.1
                   port_value: 10003
+
+A sample request body to the specified auth service looks like
+
+.. code-block:: json
+
+  {
+    "source":{
+      "address":{
+        "socket_address":{
+          "address": "172.17.0.1",
+          "port_value": 56746
+        }
+      }
+    }
+    "destination":{
+      "service": "www.bing.com",
+      "address":{
+        "socket_address": {
+          "address": "127.0.0.1",
+          "port_value": 10003
+        }
+      }
+    }
+  }
 
 Statistics
 ----------

@@ -1,10 +1,9 @@
 #include <sstream>
 #include <vector>
 
-#include "common/common/fmt.h"
-
-#include "extensions/filters/network/common/redis/fault_impl.h"
-#include "extensions/filters/network/redis_proxy/command_splitter_impl.h"
+#include "source/common/common/fmt.h"
+#include "source/extensions/filters/network/common/redis/fault_impl.h"
+#include "source/extensions/filters/network/redis_proxy/command_splitter_impl.h"
 
 #include "test/integration/integration.h"
 
@@ -21,7 +20,11 @@ namespace {
 
 const std::string CONFIG = fmt::format(R"EOF(
 admin:
-  access_log_path: {}
+  access_log:
+  - name: envoy.access_loggers.file
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+      path: "{}"
   address:
     socket_address:
       address: 127.0.0.1
@@ -77,13 +80,17 @@ const std::string CONFIG_WITH_REDIRECTION = CONFIG + R"EOF(
 
 // This is a configuration with batching enabled.
 const std::string CONFIG_WITH_BATCHING = CONFIG + R"EOF(
-            max_buffer_size_before_flush: 1024 
-            buffer_flush_timeout: 0.003s 
+            max_buffer_size_before_flush: 1024
+            buffer_flush_timeout: 0.003s
 )EOF";
 
 const std::string CONFIG_WITH_ROUTES_BASE = fmt::format(R"EOF(
 admin:
-  access_log_path: {}
+  access_log:
+  - name: envoy.access_loggers.file
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+      path: "{}"
   address:
     socket_address:
       address: 127.0.0.1
@@ -151,7 +158,7 @@ static_resources:
       filters:
         name: redis
         typed_config:
-          "@type": type.googleapis.com/envoy.config.filter.network.redis_proxy.v2.RedisProxy
+          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
           stat_prefix: redis_stats
           settings:
             op_timeout: 5s
@@ -199,7 +206,11 @@ const std::string CONFIG_WITH_DOWNSTREAM_AUTH_PASSWORD_SET = CONFIG + R"EOF(
 
 const std::string CONFIG_WITH_ROUTES_AND_AUTH_PASSWORDS = fmt::format(R"EOF(
 admin:
-  access_log_path: {}
+  access_log:
+  - name: envoy.access_loggers.file
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+      path: "{}"
   address:
     socket_address:
       address: 127.0.0.1
@@ -210,7 +221,7 @@ static_resources:
       type: STATIC
       typed_extension_protocol_options:
         envoy.filters.network.redis_proxy:
-          "@type": type.googleapis.com/envoy.config.filter.network.redis_proxy.v2.RedisProtocolOptions
+          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProtocolOptions
           auth_password: {{ inline_string: cluster_0_password }}
       lb_policy: RANDOM
       load_assignment:
@@ -227,7 +238,7 @@ static_resources:
       lb_policy: RANDOM
       typed_extension_protocol_options:
         envoy.filters.network.redis_proxy:
-          "@type": type.googleapis.com/envoy.config.filter.network.redis_proxy.v2.RedisProtocolOptions
+          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProtocolOptions
           auth_password: {{ inline_string: cluster_1_password }}
       load_assignment:
         cluster_name: cluster_1
@@ -242,7 +253,7 @@ static_resources:
       type: STATIC
       typed_extension_protocol_options:
         envoy.filters.network.redis_proxy:
-          "@type": type.googleapis.com/envoy.config.filter.network.redis_proxy.v2.RedisProtocolOptions
+          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProtocolOptions
           auth_password: {{ inline_string: cluster_2_password }}
       lb_policy: RANDOM
       load_assignment:
@@ -264,7 +275,7 @@ static_resources:
       filters:
         name: redis
         typed_config:
-          "@type": type.googleapis.com/envoy.config.filter.network.redis_proxy.v2.RedisProxy
+          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
           stat_prefix: redis_stats
           settings:
             op_timeout: 5s
@@ -507,7 +518,7 @@ INSTANTIATE_TEST_SUITE_P(IpVersions, RedisProxyWithFaultInjectionIntegrationTest
 
 void RedisProxyIntegrationTest::initialize() {
   setUpstreamCount(num_upstreams_);
-  setDeterministic();
+  setDeterministicValue();
   config_helper_.renameListener("redis_proxy");
   BaseIntegrationTest::initialize();
 }
@@ -746,9 +757,7 @@ TEST_P(RedisProxyWithRedirectionIntegrationTest, RedirectToUnknownServer) {
   std::string request = makeBulkStringArray({"get", "foo"});
   initialize();
 
-  auto endpoint =
-      Network::Utility::parseInternetAddress(Network::Test::getAnyAddressString(version_), 0);
-  FakeUpstreamPtr target_server{createFakeUpstream(endpoint, upstreamProtocol())};
+  FakeUpstreamPtr target_server{std::make_unique<FakeUpstream>(0, version_, upstreamConfig())};
 
   std::stringstream redirection_error;
   redirection_error << "-MOVED 1111 " << redisAddressAndPort(target_server) << "\r\n";

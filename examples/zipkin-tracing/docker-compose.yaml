@@ -1,59 +1,46 @@
-version: "3.7"
+version: "3.8"
 services:
 
+  # base images
+  flask_service:
+    build:
+      context: ../shared/flask
+    image: flask_service:python-3.10-slim-bullseye
+    restart: "no"
+    deploy:
+      replicas: 0
+
+  tracing:
+    build:
+      context: ../shared/tracing
+    image: envoyproxy:tracing
+    restart: "no"
+    deploy:
+      replicas: 0
+
+  # zipkin
   front-envoy:
     build:
       context: .
       dockerfile: Dockerfile-frontenvoy
-    networks:
-      - envoymesh
-    expose:
-      - "8000"
-      - "8001"
     ports:
-      - "8000:8000"
-      - "8001:8001"
+    - "8000:8000"
 
   service1:
-    build:
-      context: ../front-proxy
-      dockerfile: Dockerfile-service
+    image: envoyproxy:tracing
     volumes:
-      - ./service1-envoy-zipkin.yaml:/etc/service-envoy.yaml
-    networks:
-      envoymesh:
-        aliases:
-          - service1
+    - ./service1-envoy-zipkin.yaml:/etc/service-envoy.yaml
     environment:
-      - SERVICE_NAME=1
-    expose:
-      - "8000"
+    - SERVICE_NAME=1
 
   service2:
-    build:
-      context: ../front-proxy
-      dockerfile: Dockerfile-service
+    image: envoyproxy:tracing
     volumes:
-      - ./service2-envoy-zipkin.yaml:/etc/service-envoy.yaml
-    networks:
-      envoymesh:
-        aliases:
-          - service2
+    - ./service2-envoy-zipkin.yaml:/etc/service-envoy.yaml
     environment:
-      - SERVICE_NAME=2
-    expose:
-      - "8000"
+    - SERVICE_NAME=2
 
   zipkin:
     image: openzipkin/zipkin
-    networks:
-      envoymesh:
-        aliases:
-          - zipkin
-    expose:
-      - "9411"
     ports:
-      - "9411:9411"
-
-networks:
-  envoymesh: {}
+    - "9411:9411"

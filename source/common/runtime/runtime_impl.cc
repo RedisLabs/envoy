@@ -1,4 +1,4 @@
-#include "common/runtime/runtime_impl.h"
+#include "source/common/runtime/runtime_impl.h"
 
 #include <cstdint>
 #include <string>
@@ -6,26 +6,30 @@
 #include "envoy/config/bootstrap/v3/bootstrap.pb.h"
 #include "envoy/config/core/v3/config_source.pb.h"
 #include "envoy/event/dispatcher.h"
-#include "envoy/service/discovery/v2/rtds.pb.h"
 #include "envoy/service/discovery/v3/discovery.pb.h"
 #include "envoy/thread_local/thread_local.h"
 #include "envoy/type/v3/percent.pb.h"
 #include "envoy/type/v3/percent.pb.validate.h"
 
-#include "common/common/assert.h"
-#include "common/common/fmt.h"
-#include "common/common/utility.h"
-#include "common/config/api_version.h"
-#include "common/filesystem/directory.h"
-#include "common/grpc/common.h"
-#include "common/protobuf/message_validator_impl.h"
-#include "common/protobuf/utility.h"
-#include "common/runtime/runtime_features.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/fmt.h"
+#include "source/common/common/utility.h"
+#include "source/common/config/api_version.h"
+#include "source/common/filesystem/directory.h"
+#include "source/common/grpc/common.h"
+#include "source/common/protobuf/message_validator_impl.h"
+#include "source/common/protobuf/utility.h"
+#include "source/common/runtime/runtime_features.h"
 
 #include "absl/container/node_hash_map.h"
 #include "absl/container/node_hash_set.h"
+#include "absl/flags/flag.h"
 #include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
+
+#ifdef ENVOY_ENABLE_QUIC
+#include "quiche_platform_impl/quiche_flags_impl.h"
+#endif
 
 namespace Envoy {
 namespace Runtime {
@@ -36,6 +40,32 @@ void countDeprecatedFeatureUseInternal(const RuntimeStats& stats) {
   stats.deprecated_feature_use_.inc();
   // Similar to the above, but a gauge that isn't imported during a hot restart.
   stats.deprecated_feature_seen_since_process_start_.inc();
+}
+
+void refreshReloadableFlags(const Snapshot::EntryMap& flag_map) {
+  absl::flat_hash_map<std::string, bool> quiche_flags_override;
+  for (const auto& it : flag_map) {
+#ifdef ENVOY_ENABLE_QUIC
+    if (absl::StartsWith(it.first, quiche::EnvoyQuicheReloadableFlagPrefix) &&
+        it.second.bool_value_.has_value()) {
+      quiche_flags_override[it.first.substr(quiche::EnvoyFeaturePrefix.length())] =
+          it.second.bool_value_.value();
+    }
+#endif
+    if (it.second.bool_value_.has_value() && isRuntimeFeature(it.first)) {
+      maybeSetRuntimeGuard(it.first, it.second.bool_value_.value());
+    }
+  }
+#ifdef ENVOY_ENABLE_QUIC
+  quiche::FlagRegistry::getInstance().updateReloadableFlags(quiche_flags_override);
+#endif
+  // Make sure ints are parsed after the flag allowing deprecated ints is parsed.
+  for (const auto& it : flag_map) {
+    if (it.second.uint_value_.has_value()) {
+      maybeSetDeprecatedInts(it.first, it.second.uint_value_.value());
+    }
+  }
+  markRuntimeInitialized();
 }
 
 } // namespace
@@ -65,8 +95,8 @@ bool SnapshotImpl::deprecatedFeatureEnabled(absl::string_view key, bool default_
 
 bool SnapshotImpl::runtimeFeatureEnabled(absl::string_view key) const {
   // If the value is not explicitly set as a runtime boolean, the default value is based on
-  // enabledByDefault.
-  return getBoolean(key, RuntimeFeaturesDefaults::get().enabledByDefault(key));
+  // the underlying value.
+  return getBoolean(key, Runtime::runtimeFeatureEnabled(key));
 }
 
 bool SnapshotImpl::featureEnabled(absl::string_view key, uint64_t default_value,
@@ -178,6 +208,8 @@ const std::vector<Snapshot::OverrideLayerConstPtr>& SnapshotImpl::getLayers() co
   return layers_;
 }
 
+const Snapshot::EntryMap& SnapshotImpl::values() const { return values_; }
+
 SnapshotImpl::SnapshotImpl(Random::RandomGenerator& generator, RuntimeStats& stats,
                            std::vector<OverrideLayerConstPtr>&& layers)
     : layers_{std::move(layers)}, generator_{generator}, stats_{stats} {
@@ -238,13 +270,16 @@ bool SnapshotImpl::parseEntryDoubleValue(Entry& entry) {
 
 void SnapshotImpl::parseEntryFractionalPercentValue(Entry& entry) {
   envoy::type::v3::FractionalPercent converted_fractional_percent;
-  try {
+  TRY_ASSERT_MAIN_THREAD {
     MessageUtil::loadFromYamlAndValidate(entry.raw_string_value_, converted_fractional_percent,
                                          ProtobufMessage::getStrictValidationVisitor());
-  } catch (const ProtoValidationException& ex) {
+  }
+  END_TRY
+  catch (const ProtoValidationException& ex) {
     ENVOY_LOG(error, "unable to validate fraction percent runtime proto: {}", ex.what());
     return;
-  } catch (const EnvoyException& ex) {
+  }
+  catch (const EnvoyException& ex) {
     // An EnvoyException is thrown when we try to parse a bogus string as a protobuf. This is fine,
     // since there was no expectation that the raw string was a valid proto.
     return;
@@ -344,6 +379,11 @@ void ProtoLayer::walkProtoValue(const ProtobufWkt::Value& v, const std::string& 
     break;
   case ProtobufWkt::Value::kNumberValue:
   case ProtobufWkt::Value::kBoolValue:
+    if (hasRuntimePrefix(prefix) && !isRuntimeFeature(prefix)) {
+      IS_ENVOY_BUG(absl::StrCat(
+          "Using a removed guard ", prefix,
+          ". In future version of Enovy this will be treated as invalid configuration"));
+    }
     values_.emplace(prefix, SnapshotImpl::createEntry(v));
     break;
   case ProtobufWkt::Value::kStructValue: {
@@ -358,8 +398,6 @@ void ProtoLayer::walkProtoValue(const ProtobufWkt::Value& v, const std::string& 
     }
     break;
   }
-  default:
-    NOT_REACHED_GCOVR_EXCL_LINE;
   }
 }
 
@@ -400,8 +438,8 @@ LoaderImpl::LoaderImpl(Event::Dispatcher& dispatcher, ThreadLocal::SlotAllocator
           std::make_unique<RtdsSubscription>(*this, layer.rtds_layer(), store, validation_visitor));
       init_manager_.add(subscriptions_.back()->init_target_);
       break;
-    default:
-      NOT_REACHED_GCOVR_EXCL_LINE;
+    case envoy::config::bootstrap::v3::RuntimeLayer::LayerSpecifierCase::LAYER_SPECIFIER_NOT_SET:
+      throw EnvoyException("layer specifier not set");
     }
   }
 
@@ -429,21 +467,22 @@ void LoaderImpl::onRtdsReady() {
 RtdsSubscription::RtdsSubscription(
     LoaderImpl& parent, const envoy::config::bootstrap::v3::RuntimeLayer::RtdsLayer& rtds_layer,
     Stats::Store& store, ProtobufMessage::ValidationVisitor& validation_visitor)
-    : Envoy::Config::SubscriptionBase<envoy::service::runtime::v3::Runtime>(
-          rtds_layer.rtds_config().resource_api_version(), validation_visitor, "name"),
+    : Envoy::Config::SubscriptionBase<envoy::service::runtime::v3::Runtime>(validation_visitor,
+                                                                            "name"),
       parent_(parent), config_source_(rtds_layer.rtds_config()), store_(store),
-      resource_name_(rtds_layer.name()),
+      stats_scope_(store_.createScope("runtime")), resource_name_(rtds_layer.name()),
       init_target_("RTDS " + resource_name_, [this]() { start(); }) {}
 
 void RtdsSubscription::createSubscription() {
   const auto resource_name = getResourceName();
   subscription_ = parent_.cm_->subscriptionFactory().subscriptionFromConfigSource(
-      config_source_, Grpc::Common::typeUrl(resource_name), store_, *this, resource_decoder_);
+      config_source_, Grpc::Common::typeUrl(resource_name), *stats_scope_, *this, resource_decoder_,
+      {});
 }
 
 void RtdsSubscription::onConfigUpdate(const std::vector<Config::DecodedResourceRef>& resources,
                                       const std::string&) {
-  validateUpdateSize(resources.size());
+  validateUpdateSize(resources.size(), 0);
   const auto& runtime =
       dynamic_cast<const envoy::service::runtime::v3::Runtime&>(resources[0].get().resource());
   if (runtime.name() != resource_name_) {
@@ -458,9 +497,16 @@ void RtdsSubscription::onConfigUpdate(const std::vector<Config::DecodedResourceR
 
 void RtdsSubscription::onConfigUpdate(
     const std::vector<Config::DecodedResourceRef>& added_resources,
-    const Protobuf::RepeatedPtrField<std::string>&, const std::string&) {
-  validateUpdateSize(added_resources.size());
-  onConfigUpdate(added_resources, added_resources[0].get().version());
+    const Protobuf::RepeatedPtrField<std::string>& removed_resources, const std::string&) {
+  validateUpdateSize(added_resources.size(), removed_resources.size());
+
+  // This is a singleton subscription, so we can only have the subscribed resource added or removed,
+  // but not both.
+  if (!added_resources.empty()) {
+    onConfigUpdate(added_resources, added_resources[0].get().version());
+  } else {
+    onConfigRemoved(removed_resources);
+  }
 }
 
 void RtdsSubscription::onConfigUpdateFailed(Envoy::Config::ConfigUpdateFailureReason reason,
@@ -473,12 +519,27 @@ void RtdsSubscription::onConfigUpdateFailed(Envoy::Config::ConfigUpdateFailureRe
 
 void RtdsSubscription::start() { subscription_->start({resource_name_}); }
 
-void RtdsSubscription::validateUpdateSize(uint32_t num_resources) {
-  if (num_resources != 1) {
+void RtdsSubscription::validateUpdateSize(uint32_t added_resources_num,
+                                          uint32_t removed_resources_num) {
+  if (added_resources_num + removed_resources_num != 1) {
     init_target_.ready();
-    throw EnvoyException(fmt::format("Unexpected RTDS resource length: {}", num_resources));
-    // (would be a return false here)
+    throw EnvoyException(fmt::format("Unexpected RTDS resource length, number of added recources "
+                                     "{}, number of removed recources {}",
+                                     added_resources_num, removed_resources_num));
   }
+}
+
+void RtdsSubscription::onConfigRemoved(
+    const Protobuf::RepeatedPtrField<std::string>& removed_resources) {
+  if (removed_resources[0] != resource_name_) {
+    throw EnvoyException(
+        fmt::format("Unexpected removal of unknown RTDS runtime layer {}, expected {}",
+                    removed_resources[0], resource_name_));
+  }
+  ENVOY_LOG(debug, "Clear RTDS snapshot for onConfigUpdate");
+  proto_.Clear();
+  parent_.loadNewSnapshot();
+  init_target_.ready();
 }
 
 void LoaderImpl::loadNewSnapshot() {
@@ -486,6 +547,8 @@ void LoaderImpl::loadNewSnapshot() {
   tls_->set([ptr](Event::Dispatcher&) -> ThreadLocal::ThreadLocalObjectSharedPtr {
     return std::static_pointer_cast<ThreadLocal::ThreadLocalObject>(ptr);
   });
+
+  refreshReloadableFlags(ptr->values());
 
   {
     absl::MutexLock lock(&snapshot_mutex_);
@@ -546,10 +609,12 @@ SnapshotImplPtr LoaderImpl::createNewSnapshot() {
         path += "/" + service_cluster_;
       }
       if (api_.fileSystem().directoryExists(path)) {
-        try {
+        TRY_ASSERT_MAIN_THREAD {
           layers.emplace_back(std::make_unique<DiskLayer>(layer.name(), path, api_));
           ++disk_layers;
-        } catch (EnvoyException& e) {
+        }
+        END_TRY
+        catch (EnvoyException& e) {
           // TODO(htuch): Consider latching here, rather than ignoring the
           // layer. This would be consistent with filesystem RTDS.
           ++error_layers;
@@ -567,8 +632,8 @@ SnapshotImplPtr LoaderImpl::createNewSnapshot() {
       layers.emplace_back(std::make_unique<const ProtoLayer>(layer.name(), subscription->proto_));
       break;
     }
-    default:
-      NOT_REACHED_GCOVR_EXCL_LINE;
+    case envoy::config::bootstrap::v3::RuntimeLayer::LayerSpecifierCase::LAYER_SPECIFIER_NOT_SET:
+      PANIC_DUE_TO_PROTO_UNSET;
     }
   }
   stats_.num_layers_.set(layers.size());

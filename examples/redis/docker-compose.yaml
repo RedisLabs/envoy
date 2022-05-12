@@ -1,4 +1,4 @@
-version: "3.7"
+version: "3.8"
 services:
 
   proxy:
@@ -6,13 +6,10 @@ services:
       context: .
       dockerfile: Dockerfile-proxy
     networks:
-      - envoymesh
-    expose:
-      - "1999"
-      - "8001"
+    - envoymesh
     ports:
-      - "1999:1999"
-      - "8001:8001"
+    - "1999:1999"
+    - "8001:8001"
 
   redis:
     build:
@@ -21,11 +18,7 @@ services:
     networks:
       envoymesh:
         aliases:
-          - redis_server
-    expose:
-      - "6379"
-    ports:
-      - "6379:6379"
+        - redis_server
 
 networks:
   envoymesh: {}

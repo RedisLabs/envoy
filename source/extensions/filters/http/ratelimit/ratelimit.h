@@ -14,11 +14,10 @@
 #include "envoy/stats/scope.h"
 #include "envoy/upstream/cluster_manager.h"
 
-#include "common/common/assert.h"
-#include "common/http/header_map_impl.h"
-
-#include "extensions/filters/common/ratelimit/ratelimit.h"
-#include "extensions/filters/common/ratelimit/stat_names.h"
+#include "source/common/common/assert.h"
+#include "source/common/http/header_map_impl.h"
+#include "source/extensions/filters/common/ratelimit/ratelimit.h"
+#include "source/extensions/filters/common/ratelimit/stat_names.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -56,7 +55,8 @@ public:
             config.rate_limited_as_resource_exhausted()
                 ? absl::make_optional(Grpc::Status::WellKnownGrpcStatus::ResourceExhausted)
                 : absl::nullopt),
-        http_context_(http_context), stat_names_(scope.symbolTable()) {}
+        http_context_(http_context), stat_names_(scope.symbolTable()),
+        rate_limited_status_(toErrorCode(config.rate_limited_status().code())) {}
   const std::string& domain() const { return domain_; }
   const LocalInfo::LocalInfo& localInfo() const { return local_info_; }
   uint64_t stage() const { return stage_; }
@@ -71,6 +71,7 @@ public:
   }
   Http::Context& httpContext() { return http_context_; }
   Filters::Common::RateLimit::StatNames& statNames() { return stat_names_; }
+  Http::Code rateLimitedStatus() { return rate_limited_status_; }
 
 private:
   static FilterRequestType stringToType(const std::string& request_type) {
@@ -82,6 +83,14 @@ private:
       ASSERT(request_type == "both");
       return FilterRequestType::Both;
     }
+  }
+
+  static Http::Code toErrorCode(uint64_t status) {
+    const auto code = static_cast<Http::Code>(status);
+    if (code >= Http::Code::BadRequest) {
+      return code;
+    }
+    return Http::Code::TooManyRequests;
   }
 
   const std::string domain_;
@@ -96,6 +105,7 @@ private:
   const absl::optional<Grpc::Status::GrpcStatus> rate_limited_grpc_status_;
   Http::Context& http_context_;
   Filters::Common::RateLimit::StatNames stat_names_;
+  const Http::Code rate_limited_status_;
 };
 
 using FilterConfigSharedPtr = std::shared_ptr<FilterConfig>;
@@ -136,7 +146,7 @@ public:
   void setDecoderFilterCallbacks(Http::StreamDecoderFilterCallbacks& callbacks) override;
 
   // Http::StreamEncoderFilter
-  Http::FilterHeadersStatus encode100ContinueHeaders(Http::ResponseHeaderMap& headers) override;
+  Http::FilterHeadersStatus encode1xxHeaders(Http::ResponseHeaderMap& headers) override;
   Http::FilterHeadersStatus encodeHeaders(Http::ResponseHeaderMap& headers,
                                           bool end_stream) override;
   Http::FilterDataStatus encodeData(Buffer::Instance& data, bool end_stream) override;
@@ -148,15 +158,16 @@ public:
   void complete(Filters::Common::RateLimit::LimitStatus status,
                 Filters::Common::RateLimit::DescriptorStatusListPtr&& descriptor_statuses,
                 Http::ResponseHeaderMapPtr&& response_headers_to_add,
-                Http::RequestHeaderMapPtr&& request_headers_to_add) override;
+                Http::RequestHeaderMapPtr&& request_headers_to_add,
+                const std::string& response_body,
+                Filters::Common::RateLimit::DynamicMetadataPtr&& dynamic_metadata) override;
 
 private:
   void initiateCall(const Http::RequestHeaderMap& headers);
   void populateRateLimitDescriptors(const Router::RateLimitPolicy& rate_limit_policy,
                                     std::vector<Envoy::RateLimit::Descriptor>& descriptors,
-                                    const Router::RouteEntry* route_entry,
-                                    const Http::HeaderMap& headers) const;
-  void populateResponseHeaders(Http::HeaderMap& response_headers);
+                                    const Http::RequestHeaderMap& headers) const;
+  void populateResponseHeaders(Http::HeaderMap& response_headers, bool from_local_reply);
   void appendRequestHeaders(Http::HeaderMapPtr& request_headers_to_add);
   VhRateLimitOptions getVirtualHostRateLimitOption(const Router::RouteConstSharedPtr& route);
 

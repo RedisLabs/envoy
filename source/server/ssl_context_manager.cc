@@ -1,4 +1,4 @@
-#include "server/ssl_context_manager.h"
+#include "source/server/ssl_context_manager.h"
 
 #include "envoy/common/exception.h"
 #include "envoy/registry/registry.h"
@@ -33,6 +33,12 @@ class SslContextManagerNoTlsStub final : public Envoy::Ssl::ContextManager {
   void iterateContexts(std::function<void(const Envoy::Ssl::Context&)> /* callback */) override{};
 
   Ssl::PrivateKeyMethodManager& privateKeyMethodManager() override { throwException(); }
+
+  void removeContext(const Envoy::Ssl::ContextSharedPtr& old_context) override {
+    if (old_context) {
+      throw EnvoyException("SSL is not supported in this configuration");
+    }
+  }
 
 private:
   [[noreturn]] void throwException() {

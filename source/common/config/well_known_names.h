@@ -5,11 +5,14 @@
 
 #include "envoy/common/exception.h"
 
-#include "common/common/assert.h"
-#include "common/singleton/const_singleton.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/regex.h"
+#include "source/common/singleton/const_singleton.h"
 
 namespace Envoy {
 namespace Config {
+
+bool doesTagNameValueMatchInvalidCharRegex(absl::string_view name);
 
 /**
  * Well-known address resolver names.
@@ -42,6 +45,8 @@ class MetadataEnvoyLbKeyValues {
 public:
   // Key in envoy.lb filter namespace for endpoint canary bool value.
   const std::string CANARY = "canary";
+  // Key in envoy.lb filter namespace for the key to use to hash an endpoint.
+  const std::string HASH_KEY = "hash_key";
 };
 
 using MetadataEnvoyLbKeys = ConstSingleton<MetadataEnvoyLbKeyValues>;
@@ -62,11 +67,15 @@ public:
    * tags, such as "_rq_(\\d)xx$", will probably stay as regexes.
    */
   struct Descriptor {
-    Descriptor(const std::string& name, const std::string& regex, const std::string& substr = "")
-        : name_(name), regex_(regex), substr_(substr) {}
     const std::string name_;
     const std::string regex_;
     const std::string substr_;
+    const Regex::Type re_type_;
+  };
+
+  struct TokenizedDescriptor {
+    const std::string name_;
+    const std::string pattern_;
   };
 
   // Cluster name tag
@@ -128,11 +137,24 @@ public:
   // Returns the list of descriptors.
   const std::vector<Descriptor>& descriptorVec() const { return descriptor_vec_; }
 
+  // Returns the list of tokenized descriptors.
+  const std::vector<TokenizedDescriptor>& tokenizedDescriptorVec() const {
+    return tokenized_descriptor_vec_;
+  }
+
 private:
-  void addRegex(const std::string& name, const std::string& regex, const std::string& substr = "");
+  void addRe2(const std::string& name, const std::string& regex, const std::string& substr = "");
+
+  // See class doc for TagExtractorTokensImpl in
+  // source/common/stats/tag_extractor_impl.h for details on the format of
+  // tokens.
+  void addTokenized(const std::string& name, const std::string& tokens);
 
   // Collection of tag descriptors.
   std::vector<Descriptor> descriptor_vec_;
+
+  // Collection of tokenized tag descriptors.
+  std::vector<TokenizedDescriptor> tokenized_descriptor_vec_;
 };
 
 using TagNames = ConstSingleton<TagNameValues>;

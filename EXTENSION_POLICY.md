@@ -15,7 +15,7 @@ The following procedure will be used when proposing new extensions for inclusion
   2. All extensions must be sponsored by an existing maintainer. Sponsorship means that the
   maintainer will shepherd the extension through design/code reviews. Maintainers can self-sponsor
   extensions if they are going to write them, shepherd them, and maintain them.
-  
+
      Sponsorship serves two purposes:
      * It ensures that the extension will ultimately meet the Envoy quality bar.
      * It makes sure that incentives are aligned and that extensions are not added to the repo without
@@ -24,7 +24,7 @@ The following procedure will be used when proposing new extensions for inclusion
      *If sponsorship cannot be found from an existing maintainer, an organization can consider
      [doing the work to become a maintainer](./GOVERNANCE.md#process-for-becoming-a-maintainer) in
      order to be able to self-sponsor extensions.*
-  
+
   3. Each extension must have two reviewers proposed for reviewing PRs to the extension. Neither of
   the reviewers must be a senior maintainer. Existing maintainers (including the sponsor) and other
   contributors can count towards this number. The initial reviewers will be codified in the
@@ -35,6 +35,10 @@ The following procedure will be used when proposing new extensions for inclusion
   by other contributors.
   5. Any new dependencies added for this extension must comply with
   [DEPENDENCY_POLICY.md](DEPENDENCY_POLICY.md), please follow the steps detailed there.
+  6. If an extension depends on platform specific functionality, be sure to guard it in the build
+  system. See [platform specific features](./PULL_REQUESTS.md#platform-specific-features).
+  Add the extension to the necessary `*_SKIP_TARGETS` in [bazel/repositories.bzl](bazel/repositories.bzl)
+  and tag tests to be skipped/failed on the unsupported platform.
 
 ## Removing existing extensions
 
@@ -88,8 +92,8 @@ The `status` is one of:
 The extension status may be adjusted by the extension [CODEOWNERS](./CODEOWNERS) and/or Envoy
 maintainers based on an assessment of the above criteria. Note that the status of the extension
 reflects the implementation status. It is orthogonal to the API stability, for example, an extension
-with configuration `envoy.foo.v3alpha.Bar` might have a `stable` implementation and
-`envoy.foo.v3.Baz` can have a `wip` implementation.
+API marked with `(xds.annotations.v3.file_status).work_in_progress` might have a `stable` implementation and
+and an extension with a stable config proto can have a `wip` implementation.
 
 The `security_posture` is one of:
 * `robust_to_untrusted_downstream`: The extension is hardened against untrusted downstream traffic. It
@@ -101,7 +105,7 @@ The `security_posture` is one of:
 * `unknown`: This is functionally equivalent to `requires_trusted_downstream_and_upstream`, but acts
   as a placeholder to allow us to identify extensions that need classifying.
 * `data_plane_agnostic`: Not relevant to data plane threats, e.g. stats sinks.
- 
+
 An assessment of a robust security posture for an extension is subject to the following guidelines:
 
 * Does the extension have fuzz coverage? If it's only receiving fuzzing
@@ -118,7 +122,31 @@ An assessment of a robust security posture for an extension is subject to the fo
 * Does the extension have active [CODEOWNERS](CODEOWNERS) who are willing to
   vouch for the robustness of the extension?
 * Is the extension absent a [low coverage
-  exception](https://github.com/envoyproxy/envoy/blob/master/test/per_file_coverage.sh#L5)?
+  exception](https://github.com/envoyproxy/envoy/blob/main/test/per_file_coverage.sh#L5)?
 
 The current stability and security posture of all extensions can be seen
 [here](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/security/threat_model#core-and-extensions).
+
+## Adding Extension Points
+
+Envoy might lack the extension point necessary for an extension. In that
+case we need to install an extension point, which can be done as follows:
+
+  1. Open a GitHub issue describing the proposed extension point and use cases.
+  2. Make changes in core Envoy for the extension point.
+  3. Update [extending envoy](docs/root/extending/extending.rst) to list the new
+     extension point and add any documentation explaining the extension point.
+     At the very least this should link to the corresponding proto.
+
+## Contrib extensions
+
+As described in [this document](https://docs.google.com/document/d/1yl7GOZK1TDm_7vxQvt8UQEAu07UQFru1uEKXM6ZZg_g/edit#),
+Envoy allows an alternate path to adding extensions called `contrib/`. The barrier to entry for a
+contrib extension is lower than a core extension, with the tradeoff that contrib extensions are not
+included by default in the main image builds. Consumers need to pull directly from the contrib
+images described in the installation guide. Please read the linked document in detail to determine
+whether contrib extensions are the right choice for a newly proposed extension.
+
+**NOTE:** Contrib extensions are not eligible for Envoy security team coverage.
+**NOTE:** As per the linked Google Doc, contrib extensions generally should use `v3alpha` to avoid
+requiring API shepherd reviews.

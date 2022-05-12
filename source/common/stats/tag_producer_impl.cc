@@ -1,20 +1,31 @@
-#include "common/stats/tag_producer_impl.h"
+#include "source/common/stats/tag_producer_impl.h"
 
 #include <string>
 
 #include "envoy/common/exception.h"
 #include "envoy/config/metrics/v3/stats.pb.h"
 
-#include "common/common/utility.h"
-#include "common/stats/tag_extractor_impl.h"
+#include "source/common/common/utility.h"
+#include "source/common/stats/tag_extractor_impl.h"
 
 namespace Envoy {
 namespace Stats {
 
-TagProducerImpl::TagProducerImpl(const envoy::config::metrics::v3::StatsConfig& config) {
+TagProducerImpl::TagProducerImpl(const envoy::config::metrics::v3::StatsConfig& config)
+    : TagProducerImpl(config, {}) {}
+
+TagProducerImpl::TagProducerImpl(const envoy::config::metrics::v3::StatsConfig& config,
+                                 const Stats::TagVector& cli_tags) {
   // To check name conflict.
   reserveResources(config);
   absl::node_hash_set<std::string> names = addDefaultExtractors(config);
+
+  for (const auto& cli_tag : cli_tags) {
+    if (!names.emplace(cli_tag.name_).second) {
+      throw EnvoyException(fmt::format("Tag name '{}' specified twice.", cli_tag.name_));
+    }
+    default_tags_.emplace_back(cli_tag);
+  }
 
   for (const auto& tag_specifier : config.stats_tags()) {
     const std::string& name = tag_specifier.tag_name();
@@ -34,11 +45,11 @@ TagProducerImpl::TagProducerImpl(const envoy::config::metrics::v3::StatsConfig& 
               "No regex specified for tag specifier and no default regex for name: '{}'", name));
         }
       } else {
-        addExtractor(Stats::TagExtractorImpl::createTagExtractor(name, tag_specifier.regex()));
+        addExtractor(TagExtractorImplBase::createTagExtractor(name, tag_specifier.regex()));
       }
     } else if (tag_specifier.tag_value_case() ==
                envoy::config::metrics::v3::TagSpecifier::TagValueCase::kFixedValue) {
-      default_tags_.emplace_back(Stats::Tag{name, tag_specifier.fixed_value()});
+      default_tags_.emplace_back(Tag{name, tag_specifier.fixed_value()});
     }
   }
 }
@@ -47,8 +58,14 @@ int TagProducerImpl::addExtractorsMatching(absl::string_view name) {
   int num_found = 0;
   for (const auto& desc : Config::TagNames::get().descriptorVec()) {
     if (desc.name_ == name) {
-      addExtractor(
-          Stats::TagExtractorImpl::createTagExtractor(desc.name_, desc.regex_, desc.substr_));
+      addExtractor(TagExtractorImplBase::createTagExtractor(desc.name_, desc.regex_, desc.substr_,
+                                                            desc.re_type_));
+      ++num_found;
+    }
+  }
+  for (const auto& desc : Config::TagNames::get().tokenizedDescriptorVec()) {
+    if (desc.name_ == name) {
+      addExtractor(std::make_unique<TagExtractorTokensImpl>(desc.name_, desc.pattern_));
       ++num_found;
     }
   }
@@ -86,10 +103,12 @@ std::string TagProducerImpl::produceTags(absl::string_view metric_name, TagVecto
   // TODO(jmarantz): Skip the creation of string-based tags, creating a StatNameTagVector instead.
   tags.insert(tags.end(), default_tags_.begin(), default_tags_.end());
   IntervalSetImpl<size_t> remove_characters;
-  forEachExtractorMatching(
-      metric_name, [&remove_characters, &tags, &metric_name](const TagExtractorPtr& tag_extractor) {
-        tag_extractor->extractTag(metric_name, tags, remove_characters);
-      });
+  TagExtractionContext tag_extraction_context(metric_name);
+  std::vector<absl::string_view> tokens;
+  forEachExtractorMatching(metric_name, [&remove_characters, &tags, &tag_extraction_context](
+                                            const TagExtractorPtr& tag_extractor) {
+    tag_extractor->extractTag(tag_extraction_context, tags, remove_characters);
+  });
   return StringUtil::removeCharacters(metric_name, remove_characters);
 }
 
@@ -103,8 +122,12 @@ TagProducerImpl::addDefaultExtractors(const envoy::config::metrics::v3::StatsCon
   if (!config.has_use_all_default_tags() || config.use_all_default_tags().value()) {
     for (const auto& desc : Config::TagNames::get().descriptorVec()) {
       names.emplace(desc.name_);
-      addExtractor(
-          Stats::TagExtractorImpl::createTagExtractor(desc.name_, desc.regex_, desc.substr_));
+      addExtractor(TagExtractorImplBase::createTagExtractor(desc.name_, desc.regex_, desc.substr_,
+                                                            desc.re_type_));
+    }
+    for (const auto& desc : Config::TagNames::get().tokenizedDescriptorVec()) {
+      names.emplace(desc.name_);
+      addExtractor(std::make_unique<TagExtractorTokensImpl>(desc.name_, desc.pattern_));
     }
   }
   return names;

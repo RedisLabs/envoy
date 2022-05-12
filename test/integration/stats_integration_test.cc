@@ -5,8 +5,8 @@
 #include "envoy/stats/scope.h"
 #include "envoy/stats/stats.h"
 
-#include "common/config/well_known_names.h"
-#include "common/memory/stats.h"
+#include "source/common/config/well_known_names.h"
+#include "source/common/memory/stats.h"
 
 #include "test/common/stats/stat_test_utility.h"
 #include "test/config/utility.h"
@@ -52,6 +52,26 @@ TEST_P(StatsIntegrationTest, WithoutDefaultTagExtractors) {
 
   auto counter = test_server_->counter("http.config_test.rq_total");
   EXPECT_EQ(counter->tags().size(), 0);
+}
+
+// Regression test for https://github.com/envoyproxy/envoy/pull/21069 making
+// sure that the default error_level limits are not applied before runtime is
+// created. As described by the linked issue, this simply bypasses regex size checks.
+TEST_P(StatsIntegrationTest, WithLargeRegex) {
+  // This limit of 1000 will be ignored.
+  config_helper_.addRuntimeOverride("re2.max_program_size.error_level", "1000");
+  config_helper_.addConfigModifier([&](envoy::config::bootstrap::v3::Bootstrap& bootstrap) -> void {
+    auto pattern = bootstrap.mutable_stats_config()
+                       ->mutable_stats_matcher()
+                       ->mutable_inclusion_list()
+                       ->add_patterns();
+    pattern->mutable_safe_regex()->mutable_google_re2();
+    pattern->mutable_safe_regex()->set_regex(
+        "cluster.(metadata-cluster|iam-cluster|service-control-cluster|backend-cluster-sample-"
+        "backend-s3fctubhaq-uc.a.run.app_443).upstream_rq_(reset|timeout|[1-5]xx)|listener.*");
+  });
+  use_lds_ = false;
+  initialize();
 }
 
 TEST_P(StatsIntegrationTest, WithDefaultTagExtractors) {
@@ -266,8 +286,12 @@ TEST_P(ClusterMemoryTestRunner, MemoryLargeClusterSize) {
   // 2020/07/31  12035    37114       38000   Init manager store unready targets in hash map.
   // 2020/08/10  12275    37061       38000   Re-organize tls histogram maps to improve continuity.
   // 2020/08/11  12202    37061       38500   router: add new retry back-off strategy
-  // 2020/09/11  12973                38993   upstream: predictive prefetch
+  // 2020/09/11  12973                38993   upstream: predictive preconnect
   // 2020/10/02  13251                39326   switch to google tcmalloc
+  // 2021/08/15  17290                40349   add all host map to priority set for fast host
+  //                                          searching
+  // 2021/08/18  13176    40577       40700   Support slow start mode
+  // 2022/03/14                       42000   Fix test flakes
 
   // Note: when adjusting this value: EXPECT_MEMORY_EQ is active only in CI
   // 'release' builds, where we control the platform and tool-chain. So you
@@ -279,7 +303,7 @@ TEST_P(ClusterMemoryTestRunner, MemoryLargeClusterSize) {
   // vary.
   //
   // If you encounter a failure here, please see
-  // https://github.com/envoyproxy/envoy/blob/master/source/docs/stats.md#stats-memory-tests
+  // https://github.com/envoyproxy/envoy/blob/main/source/docs/stats.md#stats-memory-tests
   // for details on how to fix.
   //
   // We only run the exact test for ipv6 because ipv4 in some cases may allocate a
@@ -288,7 +312,7 @@ TEST_P(ClusterMemoryTestRunner, MemoryLargeClusterSize) {
     // https://github.com/envoyproxy/envoy/issues/12209
     // EXPECT_MEMORY_EQ(m_per_cluster, 37061);
   }
-  EXPECT_MEMORY_LE(m_per_cluster, 40000); // Round up to allow platform variations.
+  EXPECT_MEMORY_LE(m_per_cluster, 42000); // Round up to allow platform variations.
 }
 
 TEST_P(ClusterMemoryTestRunner, MemoryLargeHostSizeWithStats) {
@@ -318,6 +342,8 @@ TEST_P(ClusterMemoryTestRunner, MemoryLargeHostSizeWithStats) {
   // 2020/02/13  10042    1363         1655   Metadata object are shared across different clusters
   //                                          and hosts.
   // 2020/04/02  10624    1380         1655   Use 100 clusters rather than 1000 to avoid timeouts
+  // 2020/09/10                        2000   Reduce flakes
+  // 2020/03/23                        3000   Reduce flakes
 
   // Note: when adjusting this value: EXPECT_MEMORY_EQ is active only in CI
   // 'release' builds, where we control the platform and tool-chain. So you
@@ -325,7 +351,7 @@ TEST_P(ClusterMemoryTestRunner, MemoryLargeHostSizeWithStats) {
   // at the logs.
   //
   // If you encounter a failure here, please see
-  // https://github.com/envoyproxy/envoy/blob/master/source/docs/stats.md#stats-memory-tests
+  // https://github.com/envoyproxy/envoy/blob/main/source/docs/stats.md#stats-memory-tests
   // for details on how to fix.
   //
   // We only run the exact test for ipv6 because ipv4 in some cases may allocate a
@@ -334,7 +360,7 @@ TEST_P(ClusterMemoryTestRunner, MemoryLargeHostSizeWithStats) {
     // https://github.com/envoyproxy/envoy/issues/12209
     // EXPECT_MEMORY_EQ(m_per_host, 1380);
   }
-  EXPECT_MEMORY_LE(m_per_host, 2000); // Round up to allow platform variations.
+  EXPECT_MEMORY_LE(m_per_host, 3000); // Round up to allow platform variations.
 }
 
 } // namespace

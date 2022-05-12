@@ -22,12 +22,12 @@ if is_windows; then
   # CI sets it to a Linux-specific value. Undo this once https://github.com/envoyproxy/envoy/issues/13272
   # is resolved.
   ENVOY_DOCKER_OPTIONS=()
-  DEFAULT_ENVOY_DOCKER_BUILD_DIR=C:/Windows/Temp/envoy-docker-build
+  # Replace MSYS style drive letter (/c/) with Windows drive letter designation (C:/)
+  DEFAULT_ENVOY_DOCKER_BUILD_DIR=$(echo "${TEMP}" | sed -E "s#^/([a-zA-Z])/#\1:/#")/envoy-docker-build
   BUILD_DIR_MOUNT_DEST=C:/build
-  # Replace MSYS style drive letter (/c/) with driver letter designation (C:/)
-  SOURCE_DIR=$(echo "${PWD}" | sed -E "s#/([a-zA-Z])/#\1:/#")
+  SOURCE_DIR=$(echo "${PWD}" | sed -E "s#^/([a-zA-Z])/#\1:/#")
   SOURCE_DIR_MOUNT_DEST=C:/source
-  START_COMMAND=("bash" "-c" "cd source && $*")
+  START_COMMAND=("bash" "-c" "cd /c/source && export HOME=/c/build && $*")
 else
   [[ -z "${IMAGE_NAME}" ]] && IMAGE_NAME="envoyproxy/envoy-build-ubuntu"
   # We run as root and later drop permissions. This is required to setup the USER
@@ -43,6 +43,7 @@ else
   START_COMMAND=("/bin/bash" "-lc" "groupadd --gid $(id -g) -f envoygroup \
     && useradd -o --uid $(id -u) --gid $(id -g) --no-create-home --home-dir /build envoybuild \
     && usermod -a -G pcap envoybuild \
+    && chown envoybuild:envoygroup /build \
     && sudo -EHs -u envoybuild bash -c 'cd /source && $*'")
 fi
 
@@ -59,6 +60,8 @@ mkdir -p "${ENVOY_DOCKER_BUILD_DIR}"
 [[ -n "${SSH_AUTH_SOCK}" ]] && ENVOY_DOCKER_OPTIONS+=(-v "${SSH_AUTH_SOCK}:${SSH_AUTH_SOCK}" -e SSH_AUTH_SOCK)
 
 export ENVOY_BUILD_IMAGE="${IMAGE_NAME}:${IMAGE_ID}"
+
+time docker pull "${ENVOY_BUILD_IMAGE}"
 
 # Since we specify an explicit hash, docker-run will pull from the remote repo if missing.
 docker run --rm \
@@ -79,11 +82,10 @@ docker run --rm \
        -e GCP_SERVICE_ACCOUNT_KEY \
        -e NUM_CPUS \
        -e ENVOY_RBE \
-       -e FUZZIT_API_KEY \
        -e ENVOY_BUILD_IMAGE \
        -e ENVOY_SRCDIR \
        -e ENVOY_BUILD_TARGET \
-       -e SYSTEM_PULLREQUEST_TARGETBRANCH \
+       -e ENVOY_BUILD_DEBUG_INFORMATION \
        -e SYSTEM_PULLREQUEST_PULLREQUESTNUMBER \
        -e GCS_ARTIFACT_BUCKET \
        -e GITHUB_TOKEN \
@@ -93,5 +95,8 @@ docker run --rm \
        -e SLACK_TOKEN \
        -e BUILD_URI\
        -e REPO_URI \
+       -e SYSTEM_STAGEDISPLAYNAME \
+       -e SYSTEM_JOBDISPLAYNAME \
+       -e SYSTEM_PULLREQUEST_PULLREQUESTNUMBER \
        "${ENVOY_BUILD_IMAGE}" \
        "${START_COMMAND[@]}"

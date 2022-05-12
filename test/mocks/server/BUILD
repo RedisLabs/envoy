@@ -13,7 +13,7 @@ envoy_cc_mock(
     srcs = ["config_tracker.cc"],
     hdrs = ["config_tracker.h"],
     deps = [
-        "//include/envoy/server:configuration_interface",
+        "//envoy/server:configuration_interface",
     ],
 )
 
@@ -22,7 +22,8 @@ envoy_cc_mock(
     srcs = ["admin.cc"],
     hdrs = ["admin.h"],
     deps = [
-        "//include/envoy/server:admin_interface",
+        "//envoy/server:admin_interface",
+        "//test/mocks/network:socket_mocks",
         "//test/mocks/server:config_tracker_mocks",
     ],
 )
@@ -32,7 +33,15 @@ envoy_cc_mock(
     srcs = ["bootstrap_extension_factory.cc"],
     hdrs = ["bootstrap_extension_factory.h"],
     deps = [
-        "//include/envoy/server:bootstrap_extension_config_interface",
+        "//envoy/server:bootstrap_extension_config_interface",
+    ],
+)
+
+envoy_cc_mock(
+    name = "fatal_action_factory_mocks",
+    hdrs = ["fatal_action_factory.h"],
+    deps = [
+        "//envoy/server:fatal_action_interface",
     ],
 )
 
@@ -41,7 +50,7 @@ envoy_cc_mock(
     srcs = ["options.cc"],
     hdrs = ["options.h"],
     deps = [
-        "//include/envoy/server:options_interface",
+        "//envoy/server:options_interface",
         "@envoy_api//envoy/admin/v3:pkg_cc_proto",
         "@envoy_api//envoy/config/bootstrap/v3:pkg_cc_proto",
     ],
@@ -52,7 +61,7 @@ envoy_cc_mock(
     srcs = ["admin_stream.cc"],
     hdrs = ["admin_stream.h"],
     deps = [
-        "//include/envoy/server:admin_interface",
+        "//envoy/server:admin_interface",
         "//test/mocks/http:http_mocks",
     ],
 )
@@ -62,7 +71,7 @@ envoy_cc_mock(
     srcs = ["drain_manager.cc"],
     hdrs = ["drain_manager.h"],
     deps = [
-        "//include/envoy/server:drain_manager_interface",
+        "//envoy/server:drain_manager_interface",
     ],
 )
 
@@ -71,7 +80,7 @@ envoy_cc_mock(
     srcs = ["watch_dog.cc"],
     hdrs = ["watch_dog.h"],
     deps = [
-        "//include/envoy/server:watchdog_interface",
+        "//envoy/server:watchdog_interface",
     ],
 )
 
@@ -80,7 +89,7 @@ envoy_cc_mock(
     srcs = ["watchdog_config.cc"],
     hdrs = ["watchdog_config.h"],
     deps = [
-        "//include/envoy/server:configuration_interface",
+        "//envoy/server:configuration_interface",
         "//test/test_common:utility_lib",
     ],
 )
@@ -90,7 +99,7 @@ envoy_cc_mock(
     srcs = ["guard_dog.cc"],
     hdrs = ["guard_dog.h"],
     deps = [
-        "//include/envoy/server:guarddog_interface",
+        "//envoy/server:guarddog_interface",
         "//test/mocks/server:watch_dog_mocks",
     ],
 )
@@ -100,7 +109,7 @@ envoy_cc_mock(
     srcs = ["hot_restart.cc"],
     hdrs = ["hot_restart.h"],
     deps = [
-        "//include/envoy/server:instance_interface",
+        "//envoy/server:instance_interface",
         "//test/mocks/stats:stats_mocks",
     ],
 )
@@ -110,8 +119,9 @@ envoy_cc_mock(
     srcs = ["listener_component_factory.cc"],
     hdrs = ["listener_component_factory.h"],
     deps = [
-        "//include/envoy/server:drain_manager_interface",
-        "//include/envoy/server:listener_manager_interface",
+        "//envoy/server:drain_manager_interface",
+        "//envoy/server:listener_manager_interface",
+        "//test/mocks/network:io_handle_mocks",
         "//test/mocks/network:network_mocks",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
         "@envoy_api//envoy/config/listener/v3:pkg_cc_proto",
@@ -123,7 +133,7 @@ envoy_cc_mock(
     srcs = ["listener_manager.cc"],
     hdrs = ["listener_manager.h"],
     deps = [
-        "//include/envoy/server:listener_manager_interface",
+        "//envoy/server:listener_manager_interface",
     ],
 )
 
@@ -132,7 +142,7 @@ envoy_cc_mock(
     srcs = ["server_lifecycle_notifier.cc"],
     hdrs = ["server_lifecycle_notifier.h"],
     deps = [
-        "//include/envoy/server:lifecycle_notifier_interface",
+        "//envoy/server:lifecycle_notifier_interface",
     ],
 )
 
@@ -141,7 +151,7 @@ envoy_cc_mock(
     srcs = ["worker_factory.cc"],
     hdrs = ["worker_factory.h"],
     deps = [
-        "//include/envoy/server:worker_interface",
+        "//envoy/server:worker_interface",
         "//test/mocks/server:worker_mocks",
     ],
 )
@@ -151,7 +161,7 @@ envoy_cc_mock(
     srcs = ["worker.cc"],
     hdrs = ["worker.h"],
     deps = [
-        "//include/envoy/server:worker_interface",
+        "//envoy/server:worker_interface",
     ],
 )
 
@@ -160,7 +170,8 @@ envoy_cc_mock(
     srcs = ["overload_manager.cc"],
     hdrs = ["overload_manager.h"],
     deps = [
-        "//include/envoy/server:overload_manager_interface",
+        "//envoy/server/overload:overload_manager_interface",
+        "//test/mocks/event:event_mocks",
     ],
 )
 
@@ -169,9 +180,11 @@ envoy_cc_mock(
     srcs = ["instance.cc"],
     hdrs = ["instance.h"],
     deps = [
-        "//include/envoy/server:instance_interface",
+        "//envoy/server:instance_interface",
         "//source/common/grpc:context_lib",
         "//source/common/http:context_lib",
+        "//source/common/quic:quic_stat_names_lib",
+        "//source/common/router:context_lib",
         "//source/common/secret:secret_manager_impl_lib",
         "//source/common/singleton:manager_impl_lib",
         "//source/common/stats:stats_lib",
@@ -204,8 +217,8 @@ envoy_cc_mock(
     name = "main_mocks",
     hdrs = ["main.h"],
     deps = [
-        "//include/envoy/server:configuration_interface",
-        "//include/envoy/server:overload_manager_interface",
+        "//envoy/server:configuration_interface",
+        "//envoy/server/overload:overload_manager_interface",
     ],
 )
 
@@ -214,6 +227,7 @@ envoy_cc_mock(
     srcs = ["factory_context.cc"],
     hdrs = ["factory_context.h"],
     deps = [
+        "//source/common/router:context_lib",
         "//test/mocks/server:drain_manager_mocks",
         "//test/mocks/server:instance_mocks",
         "//test/mocks/server:overload_manager_mocks",
@@ -226,10 +240,13 @@ envoy_cc_mock(
     srcs = ["transport_socket_factory_context.cc"],
     hdrs = ["transport_socket_factory_context.h"],
     deps = [
-        "//include/envoy/server:tracer_config_interface",
+        "//envoy/server:tracer_config_interface",
         "//source/common/secret:secret_manager_impl_lib",
+        "//test/mocks/access_log:access_log_mocks",
         "//test/mocks/api:api_mocks",
         "//test/mocks/server:config_tracker_mocks",
+        "//test/mocks/server:options_mocks",
+        "//test/mocks/ssl:ssl_mocks",
         "//test/mocks/upstream:cluster_manager_mocks",
     ],
 )
@@ -239,7 +256,7 @@ envoy_cc_mock(
     srcs = ["listener_factory_context.cc"],
     hdrs = ["listener_factory_context.h"],
     deps = [
-        "//include/envoy/server:listener_manager_interface",
+        "//envoy/server:listener_manager_interface",
         "//test/mocks/server:factory_context_mocks",
     ],
 )
@@ -249,7 +266,7 @@ envoy_cc_mock(
     srcs = ["health_checker_factory_context.cc"],
     hdrs = ["health_checker_factory_context.h"],
     deps = [
-        "//include/envoy/server:health_checker_config_interface",
+        "//envoy/server:health_checker_config_interface",
         "//test/mocks:common_lib",
         "//test/mocks/api:api_mocks",
         "//test/mocks/event:event_mocks",
@@ -267,7 +284,8 @@ envoy_cc_mock(
     srcs = ["filter_chain_factory_context.cc"],
     hdrs = ["filter_chain_factory_context.h"],
     deps = [
-        "//include/envoy/server:filter_config_interface",
+        "//envoy/server:filter_config_interface",
+        "//source/common/router:context_lib",
         "//test/mocks/server:factory_context_mocks",
     ],
 )
@@ -277,8 +295,8 @@ envoy_cc_mock(
     srcs = ["tracer_factory.cc"],
     hdrs = ["tracer_factory.h"],
     deps = [
-        "//include/envoy/protobuf:message_validator_interface",
-        "//include/envoy/server:tracer_config_interface",
+        "//envoy/protobuf:message_validator_interface",
+        "//envoy/server:tracer_config_interface",
     ],
 )
 
@@ -287,7 +305,7 @@ envoy_cc_mock(
     srcs = ["tracer_factory_context.cc"],
     hdrs = ["tracer_factory_context.h"],
     deps = [
-        "//include/envoy/server:configuration_interface",
+        "//envoy/server:configuration_interface",
         "//test/mocks/server:instance_mocks",
         "//test/mocks/server:tracer_factory_mocks",
     ],
@@ -304,6 +322,7 @@ envoy_cc_mock(
         "//test/mocks/server:config_tracker_mocks",
         "//test/mocks/server:drain_manager_mocks",
         "//test/mocks/server:factory_context_mocks",
+        "//test/mocks/server:fatal_action_factory_mocks",
         "//test/mocks/server:filter_chain_factory_context_mocks",
         "//test/mocks/server:guard_dog_mocks",
         "//test/mocks/server:health_checker_factory_context_mocks",

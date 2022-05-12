@@ -11,7 +11,7 @@ static_resources:
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
           stat_prefix: ingress_http
-          codec_type: auto
+          codec_type: AUTO
           route_config:
             name: local_route
             virtual_hosts:
@@ -38,13 +38,13 @@ static_resources:
                   response_handle:headers():add("response-body-size", tostring(body_size))
                 end
           - name: envoy.filters.http.router
-            typed_config: {}
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
   clusters:
   - name: web_service
-    connect_timeout: 0.25s
-    type: strict_dns # static
-    lb_policy: round_robin
+    type: STRICT_DNS  # static
+    lb_policy: ROUND_ROBIN
     load_assignment:
       cluster_name: web_service
       endpoints:
@@ -54,9 +54,3 @@ static_resources:
               socket_address:
                 address: web_service
                 port_value: 80
-admin:
-  access_log_path: "/dev/null"
-  address:
-    socket_address:
-      address: 0.0.0.0
-      port_value: 8001

@@ -57,6 +57,15 @@ tapping and debugging of HTTP traffic. It works as follows:
    <envoy_v3_api_msg_data.tap.v3.HttpBufferedTrace>` messages (serialized to JSON) until the admin
    request is terminated.
 
+.. attention::
+
+  If using HTTP/1.1 to communicate with the admin endpoint, it is important to not use Unix Domain
+  Sockets (UDS) as the underlying transport. This is because UDS do not support "early close
+  detection" which means that when the client is disconnected it may take a substantial amount of
+  time for Envoy to realize the connection has been terminated (typically when the next streamed
+  message is written). During this time period it is currently impossible to connect a new tap. To
+  work around this either use HTTP/2 or use TCP.
+
 An example POST body:
 
 .. code-block:: yaml
@@ -69,11 +78,13 @@ An example POST body:
           - http_request_headers_match:
               headers:
                 - name: foo
-                  exact_match: bar
+                  string_match:
+                    exact: bar
           - http_response_headers_match:
               headers:
                 - name: bar
-                  exact_match: baz
+                  string_match:
+                    exact: baz
     output_config:
       sinks:
         - streaming_admin: {}
@@ -94,11 +105,13 @@ Another example POST body:
           - http_request_headers_match:
               headers:
                 - name: foo
-                  exact_match: bar
+                  string_match:
+                    exact: bar
           - http_response_headers_match:
               headers:
                 - name: bar
-                  exact_match: baz
+                  string_match:
+                    exact: baz
     output_config:
       sinks:
         - streaming_admin: {}
@@ -134,7 +147,8 @@ Another example POST body:
           - http_request_headers_match:
               headers:
                 - name: foo
-                  exact_match: bar
+                  string_match:
+                    exact: bar
           - http_request_generic_body_match:
               patterns:
                 - string_match: test
@@ -185,10 +199,13 @@ An example of a streaming admin tap configuration that uses the :ref:`JSON_BODY_
         - format: JSON_BODY_AS_STRING
           streaming_admin: {}
 
-Buffered body limits
---------------------
+Buffering Data
+--------------
 
-For buffered taps, Envoy will limit the amount of body data that is tapped to avoid OOM situations.
+Buffering data in tap requests can be done at two levels of granularity - buffering individual traces (downstream request & upstream response bodies) or buffering a set of traces.
+Both levels of granularity have separate controls to limit the amount of data buffered.
+
+When buffering individual traces, Envoy will limit the amount of body data that is tapped to avoid exhausting server memory.
 The default limit is 1KiB for both received (request) and transmitted (response) data. This is
 configurable via the :ref:`max_buffered_rx_bytes
 <envoy_v3_api_field_config.tap.v3.OutputConfig.max_buffered_rx_bytes>` and
@@ -196,6 +213,27 @@ configurable via the :ref:`max_buffered_rx_bytes
 <envoy_v3_api_field_config.tap.v3.OutputConfig.max_buffered_tx_bytes>` settings.
 
 .. _config_http_filters_tap_streaming:
+
+Envoy also supports buffering multiple traces internally via the ``buffered_admin`` sink type.
+This form of buffering is particularly useful for taps specifying a match configuration that is satisfied frequently.
+The post body using a buffered admin sink should specify ``max_traces`` which is the number of traces to buffer,
+and can optionally specify a ``timeout`` in seconds (Protobuf Duration), which is the maximum time the server
+should wait to accumulate ``max_traces`` before flushing the traces buffered so far to the client. Each individual
+buffered trace also adheres to the single trace buffer limits from above. This buffering behavior can also be implemented client side but
+requires non-trivial code for interpreting trace streams as they are not delimited.
+An example of a buffered admin tap configuration:
+
+.. code-block:: yaml
+
+  config_id: test_config_id
+  tap_config:
+    match_config:
+      any_match: true
+    output_config:
+      sinks:
+        - buffered_admin:
+            max_traces: 3
+            timeout: 0.2s
 
 Streaming matching
 ------------------
@@ -233,7 +271,8 @@ An static filter configuration to enable streaming output looks like:
           http_response_headers_match:
             headers:
               - name: bar
-                exact_match: baz
+                string_match:
+                  exact: baz
         output_config:
           streaming: true
           sinks:

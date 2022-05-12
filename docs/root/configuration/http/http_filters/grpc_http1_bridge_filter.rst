@@ -32,15 +32,29 @@ response trailers to a compliant gRPC server. It works by doing the following:
   work with unary gRPC APIs.
 
 This filter also collects stats for all gRPC requests that transit, even if those requests are
-normal gRPC requests over HTTP/2.
+normal gRPC requests over HTTP/2 or above.
 
 More info: wire format in `gRPC over HTTP/2 <https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md>`_.
 
 .. attention::
 
-   Note that statistics are also collected by the dedicated :ref:`gRPC stats filter
-   <config_http_filters_grpc_stats>`. The use of this filter for gRPC telemetry
-   has been deprecated.
+   Note that statistics should be collected by the dedicated :ref:`gRPC stats filter
+   <config_http_filters_grpc_stats>` instead. The use of this filter for gRPC telemetry
+   has been disabled.
+
+Protobuf upgrade support
+------------------------
+
+The filter will automatically frame requests with content-type *application/x-protobuf* as gRPC requests if
+:ref:`upgrade_protobuf_to_grpc <envoy_v3_api_field_extensions.filters.http.grpc_http1_bridge.v3.Config.upgrade_protobuf_to_grpc>` is set.
+In this case the filter will prepend the body with the gRPC frame described above, and update the content-type header to
+`application/grpc` before sending the request to the gRPC server.
+
+In case the client sends a *content-length* header it will be removed before proceeding, as the value may conflict with
+the size specified in the gRPC frame.
+
+The response body returned to the client will not contain the gRPC header frame for requests that are upgraded in this
+fashion, i.e. the body will contain only the encoded Protobuf.
 
 Statistics
 ----------

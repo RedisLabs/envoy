@@ -1,17 +1,17 @@
-#include "common/network/filter_manager_impl.h"
+#include "source/common/network/filter_manager_impl.h"
 
 #include <list>
 
 #include "envoy/network/connection.h"
 
-#include "common/common/assert.h"
+#include "source/common/common/assert.h"
 
 namespace Envoy {
 namespace Network {
 
 void FilterManagerImpl::addWriteFilter(WriteFilterSharedPtr filter) {
   ASSERT(connection_.state() == Connection::State::Open);
-  ActiveWriteFilterPtr new_filter(new ActiveWriteFilter{*this, filter});
+  ActiveWriteFilterPtr new_filter = std::make_unique<ActiveWriteFilter>(*this, filter);
   filter->initializeWriteFilterCallbacks(*new_filter);
   LinkedList::moveIntoList(std::move(new_filter), downstream_filters_);
 }
@@ -23,9 +23,18 @@ void FilterManagerImpl::addFilter(FilterSharedPtr filter) {
 
 void FilterManagerImpl::addReadFilter(ReadFilterSharedPtr filter) {
   ASSERT(connection_.state() == Connection::State::Open);
-  ActiveReadFilterPtr new_filter(new ActiveReadFilter{*this, filter});
+  ActiveReadFilterPtr new_filter = std::make_unique<ActiveReadFilter>(*this, filter);
   filter->initializeReadFilterCallbacks(*new_filter);
   LinkedList::moveIntoListBack(std::move(new_filter), upstream_filters_);
+}
+
+void FilterManagerImpl::removeReadFilter(ReadFilterSharedPtr filter_to_remove) {
+  // For perf/safety reasons, null this out rather than removing.
+  for (auto& filter : upstream_filters_) {
+    if (filter->filter_ == filter_to_remove) {
+      filter->filter_ = nullptr;
+    }
+  }
 }
 
 bool FilterManagerImpl::initializeReadFilters() {
@@ -53,6 +62,9 @@ void FilterManagerImpl::onContinueReading(ActiveReadFilter* filter,
   }
 
   for (; entry != upstream_filters_.end(); entry++) {
+    if (!(*entry)->filter_) {
+      continue;
+    }
     if (!(*entry)->initialized_) {
       (*entry)->initialized_ = true;
       FilterStatus status = (*entry)->filter_->onNewConnection();

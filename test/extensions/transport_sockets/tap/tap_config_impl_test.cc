@@ -1,6 +1,5 @@
-#include "common/network/address_impl.h"
-
-#include "extensions/transport_sockets/tap/tap_config_impl.h"
+#include "source/common/network/address_impl.h"
+#include "source/extensions/transport_sockets/tap/tap_config_impl.h"
 
 #include "test/extensions/common/tap/common.h"
 #include "test/mocks/network/mocks.h"
@@ -48,8 +47,8 @@ public:
 class PerSocketTapperImplTest : public testing::Test {
 public:
   void setup(bool streaming) {
-    connection_.local_address_ =
-        std::make_shared<Network::Address::Ipv4Instance>("127.0.0.1", 1000);
+    connection_.stream_info_.downstream_connection_info_provider_->setLocalAddress(
+        std::make_shared<Network::Address::Ipv4Instance>("127.0.0.1", 1000));
     ON_CALL(connection_, id()).WillByDefault(Return(1));
     EXPECT_CALL(*config_, createPerTapSinkHandleManager_(1)).WillOnce(Return(sink_manager_));
     EXPECT_CALL(*config_, createMatchStatusVector())
@@ -58,7 +57,11 @@ public:
     EXPECT_CALL(matcher_, onNewStream(_))
         .WillOnce(Invoke([this](TapCommon::Matcher::MatchStatusVector& statuses) {
           statuses_ = &statuses;
-          statuses[0].matches_ = true;
+          if (fail_match_) {
+            statuses[0].matches_ = false;
+          } else {
+            statuses[0].matches_ = true;
+          }
           statuses[0].might_change_status_ = false;
         }));
     EXPECT_CALL(*config_, streaming()).WillRepeatedly(Return(streaming));
@@ -79,6 +82,7 @@ public:
   TapCommon::Matcher::MatchStatusVector* statuses_;
   NiceMock<Network::MockConnection> connection_;
   Event::SimulatedTimeSystem time_system_;
+  bool fail_match_{};
 };
 
 // Verify the full streaming flow.
@@ -135,6 +139,15 @@ socket_streamed_trace_segment:
     timestamp: 1970-01-01T00:00:02Z
     closed: {}
 )EOF")));
+  time_system_.setSystemTime(std::chrono::seconds(2));
+  tapper_->closeSocket(Network::ConnectionEvent::RemoteClose);
+}
+
+TEST_F(PerSocketTapperImplTest, NonMatchingFlow) {
+  fail_match_ = true;
+  setup(true);
+
+  EXPECT_CALL(*sink_manager_, submitTrace_(_)).Times(0);
   time_system_.setSystemTime(std::chrono::seconds(2));
   tapper_->closeSocket(Network::ConnectionEvent::RemoteClose);
 }

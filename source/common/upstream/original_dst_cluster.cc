@@ -1,4 +1,4 @@
-#include "common/upstream/original_dst_cluster.h"
+#include "source/common/upstream/original_dst_cluster.h"
 
 #include <chrono>
 #include <list>
@@ -11,11 +11,11 @@
 #include "envoy/config/endpoint/v3/endpoint_components.pb.h"
 #include "envoy/stats/scope.h"
 
-#include "common/http/headers.h"
-#include "common/network/address_impl.h"
-#include "common/network/utility.h"
-#include "common/protobuf/protobuf.h"
-#include "common/protobuf/utility.h"
+#include "source/common/http/headers.h"
+#include "source/common/network/address_impl.h"
+#include "source/common/network/utility.h"
+#include "source/common/protobuf/protobuf.h"
+#include "source/common/protobuf/utility.h"
 
 namespace Envoy {
 namespace Upstream {
@@ -23,16 +23,14 @@ namespace Upstream {
 HostConstSharedPtr OriginalDstCluster::LoadBalancer::chooseHost(LoadBalancerContext* context) {
   if (context) {
     // Check if override host header is present, if yes use it otherwise check local address.
-    Network::Address::InstanceConstSharedPtr dst_host = nullptr;
-    if (parent_->use_http_header_) {
-      dst_host = requestOverrideHost(context);
-    }
+    Network::Address::InstanceConstSharedPtr dst_host = requestOverrideHost(context);
+
     if (dst_host == nullptr) {
       const Network::Connection* connection = context->downstreamConnection();
       // The local address of the downstream connection is the original destination address,
       // if localAddressRestored() returns 'true'.
-      if (connection && connection->localAddressRestored()) {
-        dst_host = connection->localAddress();
+      if (connection && connection->connectionInfoProvider().localAddressRestored()) {
+        dst_host = connection->connectionInfoProvider().localAddress();
       }
     }
 
@@ -57,7 +55,7 @@ HostConstSharedPtr OriginalDstCluster::LoadBalancer::chooseHost(LoadBalancerCont
             info, info->name() + dst_addr.asString(), std::move(host_ip_port), nullptr, 1,
             envoy::config::core::v3::Locality().default_instance(),
             envoy::config::endpoint::v3::Endpoint::HealthCheckConfig().default_instance(), 0,
-            envoy::config::core::v3::UNKNOWN));
+            envoy::config::core::v3::UNKNOWN, parent_->time_source_));
         ENVOY_LOG(debug, "Created host {}.", host->address()->asString());
 
         // Tell the cluster about the new host
@@ -82,24 +80,29 @@ HostConstSharedPtr OriginalDstCluster::LoadBalancer::chooseHost(LoadBalancerCont
 
 Network::Address::InstanceConstSharedPtr
 OriginalDstCluster::LoadBalancer::requestOverrideHost(LoadBalancerContext* context) {
-  Network::Address::InstanceConstSharedPtr request_host;
+  if (!http_header_name_.has_value()) {
+    return nullptr;
+  }
   const Http::HeaderMap* downstream_headers = context->downstreamHeaders();
-  Http::HeaderMap::GetResult override_header;
-  if (downstream_headers) {
-    override_header = downstream_headers->get(Http::Headers::get().EnvoyOriginalDstHost);
+  if (!downstream_headers) {
+    return nullptr;
   }
-  if (!override_header.empty()) {
-    try {
-      // This is an implicitly untrusted header, so per the API documentation only the first
-      // value is used.
-      const std::string request_override_host(override_header[0]->value().getStringView());
-      request_host = Network::Utility::parseInternetAddressAndPort(request_override_host, false);
-      ENVOY_LOG(debug, "Using request override host {}.", request_override_host);
-    } catch (const Envoy::EnvoyException& e) {
-      ENVOY_LOG(debug, "original_dst_load_balancer: invalid override header value. {}", e.what());
-      parent_->info()->stats().original_dst_host_invalid_.inc();
-    }
+  Http::HeaderMap::GetResult override_header = downstream_headers->get(*http_header_name_);
+  if (override_header.empty()) {
+    return nullptr;
   }
+  // This is an implicitly untrusted header, so per the API documentation only the first
+  // value is used.
+  const std::string request_override_host(override_header[0]->value().getStringView());
+  Network::Address::InstanceConstSharedPtr request_host =
+      Network::Utility::parseInternetAddressAndPortNoThrow(request_override_host, false);
+  if (request_host == nullptr) {
+    ENVOY_LOG(debug, "original_dst_load_balancer: invalid override header value. {}",
+              request_override_host);
+    parent_->info()->stats().original_dst_host_invalid_.inc();
+    return nullptr;
+  }
+  ENVOY_LOG(debug, "Using request override host {}.", request_override_host);
   return request_host;
 }
 
@@ -107,18 +110,29 @@ OriginalDstCluster::OriginalDstCluster(
     const envoy::config::cluster::v3::Cluster& config, Runtime::Loader& runtime,
     Server::Configuration::TransportSocketFactoryContextImpl& factory_context,
     Stats::ScopePtr&& stats_scope, bool added_via_api)
-    : ClusterImplBase(config, runtime, factory_context, std::move(stats_scope), added_via_api),
-      dispatcher_(factory_context.dispatcher()),
+    : ClusterImplBase(config, runtime, factory_context, std::move(stats_scope), added_via_api,
+                      factory_context.mainThreadDispatcher().timeSource()),
+      dispatcher_(factory_context.mainThreadDispatcher()),
       cleanup_interval_ms_(
           std::chrono::milliseconds(PROTOBUF_GET_MS_OR_DEFAULT(config, cleanup_interval, 5000))),
       cleanup_timer_(dispatcher_.createTimer([this]() -> void { cleanup(); })),
-      use_http_header_(info_->lbOriginalDstConfig()
-                           ? info_->lbOriginalDstConfig().value().use_http_header()
-                           : false),
       host_map_(std::make_shared<HostMap>()) {
-  // TODO(dio): Remove hosts check once the hosts field is removed.
-  if (config.has_load_assignment() || !config.hidden_envoy_deprecated_hosts().empty()) {
-    throw EnvoyException("ORIGINAL_DST clusters must have no load assignment or hosts configured");
+  if (const auto& config_opt = info_->lbOriginalDstConfig(); config_opt.has_value()) {
+    if (config_opt->use_http_header()) {
+      http_header_name_ = config_opt->http_header_name().empty()
+                              ? Http::Headers::get().EnvoyOriginalDstHost
+                              : Http::LowerCaseString(config_opt->http_header_name());
+    } else {
+      if (!config_opt->http_header_name().empty()) {
+        throw EnvoyException(fmt::format(
+            "ORIGINAL_DST cluster: invalid config http_header_name={} and use_http_header is "
+            "false. Set use_http_header to true if http_header_name is desired.",
+            config_opt->http_header_name()));
+      }
+    }
+  }
+  if (config.has_load_assignment()) {
+    throw EnvoyException("ORIGINAL_DST clusters must have no load assignment configured");
   }
   cleanup_timer_->enableTimer(cleanup_interval_ms_);
 }
@@ -181,14 +195,12 @@ OriginalDstClusterFactory::createClusterImpl(
     const envoy::config::cluster::v3::Cluster& cluster, ClusterFactoryContext& context,
     Server::Configuration::TransportSocketFactoryContextImpl& socket_factory_context,
     Stats::ScopePtr&& stats_scope) {
-  if (cluster.lb_policy() !=
-          envoy::config::cluster::v3::Cluster::hidden_envoy_deprecated_ORIGINAL_DST_LB &&
-      cluster.lb_policy() != envoy::config::cluster::v3::Cluster::CLUSTER_PROVIDED) {
-    throw EnvoyException(fmt::format(
-        "cluster: LB policy {} is not valid for Cluster type {}. Only 'CLUSTER_PROVIDED' or "
-        "'ORIGINAL_DST_LB' is allowed with cluster type 'ORIGINAL_DST'",
-        envoy::config::cluster::v3::Cluster::LbPolicy_Name(cluster.lb_policy()),
-        envoy::config::cluster::v3::Cluster::DiscoveryType_Name(cluster.type())));
+  if (cluster.lb_policy() != envoy::config::cluster::v3::Cluster::CLUSTER_PROVIDED) {
+    throw EnvoyException(
+        fmt::format("cluster: LB policy {} is not valid for Cluster type {}. Only "
+                    "'CLUSTER_PROVIDED' is allowed with cluster type 'ORIGINAL_DST'",
+                    envoy::config::cluster::v3::Cluster::LbPolicy_Name(cluster.lb_policy()),
+                    envoy::config::cluster::v3::Cluster::DiscoveryType_Name(cluster.type())));
   }
 
   // TODO(mattklein123): The original DST load balancer type should be deprecated and instead

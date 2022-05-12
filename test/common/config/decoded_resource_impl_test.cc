@@ -1,4 +1,4 @@
-#include "common/config/decoded_resource_impl.h"
+#include "source/common/config/decoded_resource_impl.h"
 
 #include "test/mocks/config/mocks.h"
 #include "test/test_common/utility.h"
@@ -23,12 +23,13 @@ TEST(DecodedResourceImplTest, All) {
             []() -> ProtobufTypes::MessagePtr { return std::make_unique<ProtobufWkt::Empty>(); }));
     EXPECT_CALL(resource_decoder, resourceName(ProtoEq(ProtobufWkt::Empty())))
         .WillOnce(Return("some_name"));
-    DecodedResourceImpl decoded_resource(resource_decoder, some_opaque_resource, "foo");
-    EXPECT_EQ("some_name", decoded_resource.name());
-    EXPECT_TRUE(decoded_resource.aliases().empty());
-    EXPECT_EQ("foo", decoded_resource.version());
-    EXPECT_THAT(decoded_resource.resource(), ProtoEq(ProtobufWkt::Empty()));
-    EXPECT_TRUE(decoded_resource.hasResource());
+    auto decoded_resource =
+        DecodedResourceImpl::fromResource(resource_decoder, some_opaque_resource, "foo");
+    EXPECT_EQ("some_name", decoded_resource->name());
+    EXPECT_TRUE(decoded_resource->aliases().empty());
+    EXPECT_EQ("foo", decoded_resource->version());
+    EXPECT_THAT(decoded_resource->resource(), ProtoEq(ProtobufWkt::Empty()));
+    EXPECT_TRUE(decoded_resource->hasResource());
   }
 
   {

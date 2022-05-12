@@ -2,8 +2,8 @@
 
 #include "envoy/event/dispatcher.h"
 
-#include "common/common/logger.h"
-#include "common/network/filter_manager_impl.h"
+#include "source/common/common/logger.h"
+#include "source/common/network/filter_manager_impl.h"
 
 namespace Envoy {
 namespace Network {
@@ -22,6 +22,7 @@ public:
 
   // Network::Connection
   void addConnectionCallbacks(ConnectionCallbacks& cb) override;
+  void removeConnectionCallbacks(ConnectionCallbacks& cb) override;
   Event::Dispatcher& dispatcher() override { return dispatcher_; }
   uint64_t id() const override { return id_; }
   void hashKey(std::vector<uint8_t>& hash) const override;

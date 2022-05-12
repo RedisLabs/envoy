@@ -1,4 +1,4 @@
-version: "3.7"
+version: "3.8"
 
 services:
 
@@ -7,14 +7,12 @@ services:
     image: envoyproxy/example-kv-server
     build:
       context: server
-    expose:
-      - "8081"
     ports:
-      - "8081:8081"
+    - "8081:8081"
     networks:
       envoymesh:
         aliases:
-          - kv-backend-service
+        - kv-backend-service
 
   grpc-server-proxy:
     build:
@@ -23,13 +21,9 @@ services:
     networks:
       envoymesh:
         aliases:
-          - kv-backend-proxy
-    expose:
-      - "8811"
-      - "8881"
+        - kv-backend-proxy
     ports:
-      - "8811:8811"
-      - "8881:8881"
+    - "8811:8811"
 
   # Requires the build of the stubs first
   grpc-client:
@@ -37,11 +31,9 @@ services:
     build:
       context: client
     environment:
-      - CLIENT_PROXY=http://kv-client-proxy:9911
+    - CLIENT_PROXY=http://kv-client-proxy:9911
     networks:
-      envoymesh:
-        aliases:
-          - grpc-client
+    - envoymesh
 
   grpc-client-proxy:
     build:
@@ -50,13 +42,9 @@ services:
     networks:
       envoymesh:
         aliases:
-          - kv-client-proxy
-    expose:
-      - "9911"
-      - "9991"
+        - kv-client-proxy
     ports:
-      - "9911:9911"
-      - "9991:9991"
+    - "9911:9911"
 
 networks:
   envoymesh: {}

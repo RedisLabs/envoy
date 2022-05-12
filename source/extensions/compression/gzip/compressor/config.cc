@@ -1,4 +1,4 @@
-#include "extensions/compression/gzip/compressor/config.h"
+#include "source/extensions/compression/gzip/compressor/config.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -82,7 +82,8 @@ Envoy::Compression::Compressor::CompressorPtr GzipCompressorFactory::createCompr
 
 Envoy::Compression::Compressor::CompressorFactoryPtr
 GzipCompressorLibraryFactory::createCompressorFactoryFromProtoTyped(
-    const envoy::extensions::compression::gzip::compressor::v3::Gzip& proto_config) {
+    const envoy::extensions::compression::gzip::compressor::v3::Gzip& proto_config,
+    Server::Configuration::FactoryContext&) {
   return std::make_unique<GzipCompressorFactory>(proto_config);
 }
 

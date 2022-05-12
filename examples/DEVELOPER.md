@@ -85,6 +85,18 @@ responds_with \
     -H 'Origin: https://example-service.com'
 ```
 
+#### Utility functions: `responds_without`
+
+You can also check that a request *does not* respond with given `HTTP` content:
+
+```bash
+responds_without \
+    "Anything unexpected" \
+    "http://localhost:8000"
+```
+
+`responds_without` can accept additional curl arguments like `responds_with`
+
 #### Utility functions: `responds_with_header`
 
 You can check that a request responds with an expected header as follows:
@@ -108,6 +120,16 @@ responds_without_header \
 ```
 
 `responds_without_header` can accept additional curl arguments like `responds_with`
+
+#### Utility functions: `wait_for`
+
+You can wait for some amount of time (specified in seconds) for a command to return `0`.
+
+The following example will wait for 20 seconds for a service ``my-service`` to become healthy.
+
+```bash
+wait_for 20 sh -c "docker-compose ps my-service | grep healthy | grep -v unhealthy"
+```
 
 ### Slow starting `docker` compositions
 
@@ -225,6 +247,20 @@ the following in the Docker recipe:
 ```
 RUN chmod go+r /etc/front-envoy.yaml
 ```
+
+### Additional `pip` dependencies
+
+Pip dependencies should be added to a `requirements.in` file, and compiled with `pip-compile`.
+
+Please see existing examples for further information.
+
+The `requirements.txt` will also need to be added to `.github/dependabot.yaml`.
+
+### Shared Docker images and service definitions
+
+There are shared `Dockerfile` resources available for use in building an example.
+
+Please see the `examples/shared` folder.
 
 ## Sandbox configuration tests
 

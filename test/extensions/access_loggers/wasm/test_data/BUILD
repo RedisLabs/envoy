@@ -22,14 +22,10 @@ envoy_cc_library(
         "//source/common/common:c_smart_ptr_lib",
         "//source/extensions/common/wasm:wasm_hdr",
         "//source/extensions/common/wasm:wasm_lib",
-        "//source/extensions/common/wasm:well_known_names",
     ],
 )
 
 envoy_wasm_cc_binary(
     name = "test_cpp.wasm",
     srcs = ["test_cpp.cc"],
-    deps = [
-        "@proxy_wasm_cpp_sdk//:proxy_wasm_intrinsics_lite",
-    ],
 )

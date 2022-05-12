@@ -1,4 +1,4 @@
-#include "common/config/config_provider_impl.h"
+#include "source/common/config/config_provider_impl.h"
 
 namespace Envoy {
 namespace Config {
@@ -25,11 +25,8 @@ ConfigSubscriptionCommonBase::~ConfigSubscriptionCommonBase() {
 }
 
 void ConfigSubscriptionCommonBase::applyConfigUpdate(const ConfigUpdateCb& update_fn) {
-  tls_->runOnAllThreads([update_fn](ThreadLocal::ThreadLocalObjectSharedPtr previous)
-                            -> ThreadLocal::ThreadLocalObjectSharedPtr {
-    auto prev_thread_local_config = std::dynamic_pointer_cast<ThreadLocalConfig>(previous);
-    prev_thread_local_config->config_ = update_fn(prev_thread_local_config->config_);
-    return previous;
+  tls_.runOnAllThreads([update_fn](OptRef<ThreadLocalConfig> thread_local_config) {
+    thread_local_config->config_ = update_fn(thread_local_config->config_);
   });
 }
 
@@ -55,8 +52,9 @@ bool ConfigSubscriptionInstance::checkAndApplyConfigUpdate(const Protobuf::Messa
 
 ConfigProviderManagerImplBase::ConfigProviderManagerImplBase(Server::Admin& admin,
                                                              const std::string& config_name) {
-  config_tracker_entry_ =
-      admin.getConfigTracker().add(config_name, [this] { return dumpConfigs(); });
+  config_tracker_entry_ = admin.getConfigTracker().add(
+      config_name,
+      [this](const Matchers::StringMatcher& name_matcher) { return dumpConfigs(name_matcher); });
   // ConfigTracker keys must be unique. We are asserting that no one has stolen the key
   // from us, since the returned entry will be nullptr if the key already exists.
   RELEASE_ASSERT(config_tracker_entry_, "");

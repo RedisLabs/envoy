@@ -1,7 +1,5 @@
-#include "common/config/utility.h"
-#include "common/protobuf/utility.h"
-
-#include "extensions/filters/http/well_known_names.h"
+#include "source/common/config/utility.h"
+#include "source/common/protobuf/utility.h"
 
 #include "test/config/utility.h"
 #include "test/extensions/filters/http/common/fuzz/filter_fuzz.pb.validate.h"
@@ -21,8 +19,20 @@ DEFINE_PROTO_FUZZER(const test::extensions::filters::http::FilterFuzzTestCase& i
         // applied only when libprotobuf-mutator calls mutate on an input, and *not* during fuzz
         // target execution. Replaying a corpus through the fuzzer will not be affected by the
         // post-processor mutation.
-        static const std::vector<absl::string_view> filter_names = Registry::FactoryRegistry<
+        static const std::vector<absl::string_view> registered_names = Registry::FactoryRegistry<
             Server::Configuration::NamedHttpFilterConfigFactory>::registeredNames();
+        // Exclude filters that don't work with this test. See #20737
+        absl::flat_hash_set<absl::string_view> exclusion_list = {
+            "envoy.ext_proc", "envoy.filters.http.alternate_protocols_cache",
+            "envoy.filters.http.composite", "envoy.filters.http.ext_proc"};
+        std::vector<absl::string_view> filter_names;
+        filter_names.reserve(registered_names.size());
+        std::for_each(registered_names.begin(), registered_names.end(),
+                      [&](const absl::string_view& filter) {
+                        if (exclusion_list.count(filter) == 0) {
+                          filter_names.push_back(filter);
+                        }
+                      });
         static const auto factories = Registry::FactoryRegistry<
             Server::Configuration::NamedHttpFilterConfigFactory>::factories();
         // Choose a valid filter name.
@@ -48,6 +58,7 @@ DEFINE_PROTO_FUZZER(const test::extensions::filters::http::FilterFuzzTestCase& i
   try {
     // Catch invalid header characters.
     TestUtility::validate(input);
+    ENVOY_LOG_MISC(debug, "Filter configuration: {}", input.config().DebugString());
     // Fuzz filter.
     static UberFilterFuzzer fuzzer;
     fuzzer.fuzz(input.config(), input.data(), input.upstream_data());

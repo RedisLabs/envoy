@@ -1,11 +1,11 @@
-#include "extensions/filters/http/tap/tap_config_impl.h"
+#include "source/extensions/filters/http/tap/tap_config_impl.h"
 
 #include "envoy/config/core/v3/base.pb.h"
 #include "envoy/config/tap/v3/common.pb.h"
 #include "envoy/data/tap/v3/http.pb.h"
 
-#include "common/common/assert.h"
-#include "common/protobuf/protobuf.h"
+#include "source/common/common/assert.h"
+#include "source/common/protobuf/protobuf.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -26,7 +26,7 @@ fillHeaderList(Protobuf::RepeatedPtrField<envoy::config::core::v3::HeaderValue>*
 }
 } // namespace
 
-HttpTapConfigImpl::HttpTapConfigImpl(envoy::config::tap::v3::TapConfig&& proto_config,
+HttpTapConfigImpl::HttpTapConfigImpl(const envoy::config::tap::v3::TapConfig& proto_config,
                                      Common::Tap::Sink* admin_streamer)
     : TapCommon::TapConfigBaseImpl(std::move(proto_config), admin_streamer) {}
 

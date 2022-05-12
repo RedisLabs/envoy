@@ -1,4 +1,4 @@
-#include "extensions/tracers/lightstep/lightstep_tracer_impl.h"
+#include "source/extensions/tracers/lightstep/lightstep_tracer_impl.h"
 
 #include <chrono>
 #include <cstdint>
@@ -7,14 +7,14 @@
 
 #include "envoy/config/trace/v3/lightstep.pb.h"
 
-#include "common/buffer/buffer_impl.h"
-#include "common/buffer/zero_copy_input_stream_impl.h"
-#include "common/common/base64.h"
-#include "common/common/fmt.h"
-#include "common/config/utility.h"
-#include "common/grpc/common.h"
-#include "common/http/message_impl.h"
-#include "common/tracing/http_tracer_impl.h"
+#include "source/common/buffer/buffer_impl.h"
+#include "source/common/buffer/zero_copy_input_stream_impl.h"
+#include "source/common/common/base64.h"
+#include "source/common/common/fmt.h"
+#include "source/common/config/utility.h"
+#include "source/common/grpc/common.h"
+#include "source/common/http/message_impl.h"
+#include "source/common/tracing/http_tracer_impl.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -24,12 +24,10 @@ namespace Lightstep {
 static void serializeGrpcMessage(const lightstep::BufferChain& buffer_chain,
                                  Buffer::Instance& body) {
   auto size = buffer_chain.num_bytes();
-  Buffer::RawSlice iovec;
-  body.reserve(size, &iovec, 1);
-  ASSERT(iovec.len_ >= size);
-  iovec.len_ = size;
-  buffer_chain.CopyOut(static_cast<char*>(iovec.mem_), size);
-  body.commit(&iovec, 1);
+  auto reservation = body.reserveSingleSlice(size);
+  ASSERT(reservation.slice().len_ >= size);
+  buffer_chain.CopyOut(static_cast<char*>(reservation.slice().mem_), size);
+  reservation.commit(size);
   Grpc::Common::prependGrpcFrameHeader(body);
 }
 
@@ -42,6 +40,7 @@ MakePropagationModes(const envoy::config::trace::v3::LightstepConfig& lightstep_
   result.reserve(lightstep_config.propagation_modes().size());
   for (auto propagation_mode : lightstep_config.propagation_modes()) {
     switch (propagation_mode) {
+      PANIC_ON_PROTO_ENUM_SENTINEL_VALUES;
     case envoy::config::trace::v3::LightstepConfig::ENVOY:
       result.push_back(lightstep::PropagationMode::envoy);
       break;
@@ -54,8 +53,6 @@ MakePropagationModes(const envoy::config::trace::v3::LightstepConfig& lightstep_
     case envoy::config::trace::v3::LightstepConfig::TRACE_CONTEXT:
       result.push_back(lightstep::PropagationMode::trace_context);
       break;
-    default:
-      NOT_REACHED_GCOVR_EXCL_LINE;
     }
   }
   return result;
@@ -128,15 +125,13 @@ void LightStepDriver::LightStepTransporter::Send(std::unique_ptr<lightstep::Buff
       absl::optional<std::chrono::milliseconds>(timeout));
   serializeGrpcMessage(*report, message->body());
 
-  if (collector_cluster_.exists()) {
+  if (collector_cluster_.threadLocalCluster().has_value()) {
     active_report_ = std::move(report);
     active_callback_ = &callback;
-    active_cluster_ = collector_cluster_.info();
-    active_request_ = driver_.clusterManager()
-                          .httpAsyncClientForCluster(collector_cluster_.info()->name())
-                          .send(std::move(message), *this,
-                                Http::AsyncClient::RequestOptions().setTimeout(
-                                    std::chrono::milliseconds(timeout)));
+    active_cluster_ = collector_cluster_.threadLocalCluster()->get().info();
+    active_request_ = collector_cluster_.threadLocalCluster()->get().httpAsyncClient().send(
+        std::move(message), *this,
+        Http::AsyncClient::RequestOptions().setTimeout(std::chrono::milliseconds(timeout)));
   } else {
     ENVOY_LOG(debug, "collector cluster '{}' does not exist", driver_.cluster());
     driver_.tracerStats().reports_skipped_no_cluster_.inc();
@@ -199,7 +194,8 @@ LightStepDriver::LightStepDriver(const envoy::config::trace::v3::LightstepConfig
                                 cm_, /* allow_added_via_api */ true);
   cluster_ = lightstep_config.collector_cluster();
 
-  if (!(cm_.get(cluster_)->info()->features() & Upstream::ClusterInfo::Features::HTTP2)) {
+  if (!(cm_.clusters().getCluster(cluster_)->get().info()->features() &
+        Upstream::ClusterInfo::Features::HTTP2)) {
     throw EnvoyException(
         fmt::format("{} collector cluster must support http2 for gRPC calls", cluster_));
   }

@@ -1,31 +1,23 @@
-version: '3.7'
+version: '3.8'
 services:
+
+  flask_service:
+    build:
+      context: ../../shared/flask
+    image: flask_service:python-3.10-slim-bullseye
+    restart: "no"
+    deploy:
+      replicas: 0
 
   front-envoy:
     build:
       context: .
       dockerfile: Dockerfile-frontenvoy
-    networks:
-      - envoymesh
-    expose:
-      - "8000"
-      - "8001"
     ports:
-      - "8002:8000"
-      - "8003:8001"
+    - "8002:8000"
 
   service:
-    build:
-      context: ..
-      dockerfile: crosssite/Dockerfile-service
+    image: flask_service:python-3.10-slim-bullseye
     volumes:
-      - ../service-envoy.yaml:/etc/service-envoy.yaml
-    networks:
-      envoymesh:
-        aliases:
-          - service
-    expose:
-      - "8000"
-
-networks:
-  envoymesh: {}
+    - ./service.py:/code/service.py
+    - ../index.html:/code/index.html

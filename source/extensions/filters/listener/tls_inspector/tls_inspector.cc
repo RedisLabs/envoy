@@ -1,4 +1,4 @@
-#include "extensions/filters/listener/tls_inspector/tls_inspector.h"
+#include "source/extensions/filters/listener/tls_inspector/tls_inspector.h"
 
 #include <cstdint>
 #include <string>
@@ -10,12 +10,14 @@
 #include "envoy/network/listen_socket.h"
 #include "envoy/stats/scope.h"
 
-#include "common/api/os_sys_calls_impl.h"
-#include "common/common/assert.h"
+#include "source/common/api/os_sys_calls_impl.h"
+#include "source/common/common/assert.h"
+#include "source/common/common/hex.h"
+#include "source/common/protobuf/utility.h"
 
-#include "extensions/transport_sockets/well_known_names.h"
-
+#include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
+#include "openssl/md5.h"
 #include "openssl/ssl.h"
 
 namespace Envoy {
@@ -27,9 +29,14 @@ namespace TlsInspector {
 const unsigned Config::TLS_MIN_SUPPORTED_VERSION = TLS1_VERSION;
 const unsigned Config::TLS_MAX_SUPPORTED_VERSION = TLS1_3_VERSION;
 
-Config::Config(Stats::Scope& scope, uint32_t max_client_hello_size)
+Config::Config(
+    Stats::Scope& scope,
+    const envoy::extensions::filters::listener::tls_inspector::v3::TlsInspector& proto_config,
+    uint32_t max_client_hello_size)
     : stats_{ALL_TLS_INSPECTOR_STATS(POOL_COUNTER_PREFIX(scope, "tls_inspector."))},
       ssl_ctx_(SSL_CTX_new(TLS_with_buffers_method())),
+      enable_ja3_fingerprinting_(
+          PROTOBUF_GET_WRAPPED_OR_DEFAULT(proto_config, enable_ja3_fingerprinting, false)),
       max_client_hello_size_(max_client_hello_size) {
 
   if (max_client_hello_size_ > TLS_MAX_CLIENT_HELLO) {
@@ -43,11 +50,13 @@ Config::Config(Stats::Scope& scope, uint32_t max_client_hello_size)
   SSL_CTX_set_session_cache_mode(ssl_ctx_.get(), SSL_SESS_CACHE_OFF);
   SSL_CTX_set_select_certificate_cb(
       ssl_ctx_.get(), [](const SSL_CLIENT_HELLO* client_hello) -> ssl_select_cert_result_t {
+        Filter* filter = static_cast<Filter*>(SSL_get_app_data(client_hello->ssl));
+        filter->createJA3Hash(client_hello);
+
         const uint8_t* data;
         size_t len;
         if (SSL_early_callback_ctx_extension_get(
                 client_hello, TLSEXT_TYPE_application_layer_protocol_negotiation, &data, &len)) {
-          Filter* filter = static_cast<Filter*>(SSL_get_app_data(client_hello->ssl));
           filter->onALPN(data, len);
         }
         return ssl_select_cert_success;
@@ -78,7 +87,6 @@ Filter::Filter(const ConfigSharedPtr config) : config_(config), ssl_(config_->ne
 Network::FilterStatus Filter::onAccept(Network::ListenerFilterCallbacks& cb) {
   ENVOY_LOG(debug, "tls inspector: new connection accepted");
   Network::ConnectionSocket& socket = cb.socket();
-  ASSERT(file_event_ == nullptr);
   cb_ = &cb;
 
   ParseState parse_state = onRead();
@@ -93,15 +101,9 @@ Network::FilterStatus Filter::onAccept(Network::ListenerFilterCallbacks& cb) {
     return Network::FilterStatus::Continue;
   case ParseState::Continue:
     // do nothing but create the event
-    file_event_ = socket.ioHandle().createFileEvent(
+    socket.ioHandle().initializeFileEvent(
         cb.dispatcher(),
         [this](uint32_t events) {
-          if (events & Event::FileReadyType::Closed) {
-            config_->stats().connection_closed_.inc();
-            done(false);
-            return;
-          }
-
           ASSERT(events == Event::FileReadyType::Read);
           ParseState parse_state = onRead();
           switch (parse_state) {
@@ -116,11 +118,12 @@ Network::FilterStatus Filter::onAccept(Network::ListenerFilterCallbacks& cb) {
             break;
           }
         },
-        Event::PlatformDefaultTriggerType,
-        Event::FileReadyType::Read | Event::FileReadyType::Closed);
+        Event::PlatformDefaultTriggerType, Event::FileReadyType::Read);
     return Network::FilterStatus::StopIteration;
   }
-  NOT_REACHED_GCOVR_EXCL_LINE;
+
+  IS_ENVOY_BUG("unexpected tcp filter parse_state");
+  return Network::FilterStatus::StopIteration;
 }
 
 void Filter::onALPN(const unsigned char* data, unsigned int len) {
@@ -160,7 +163,7 @@ ParseState Filter::onRead() {
   // there is no way for a listener-filter to pass payload data to the ConnectionImpl and filters
   // that get created later.
   //
-  // The file_event_ in this class gets events every time new data is available on the socket,
+  // We request from the file descriptor to get events every time new data is available,
   // even if previous data has not been read, which is always the case due to MSG_PEEK. When
   // the TlsInspector completes and passes the socket along, a new FileEvent is created for the
   // socket, so that new event is immediately signaled as readable because it is new and the socket
@@ -169,7 +172,7 @@ ParseState Filter::onRead() {
   // TODO(ggreenway): write an integration test to ensure the events work as expected on all
   // platforms.
   const auto result = cb_->socket().ioHandle().recv(buf_, config_->maxClientHelloSize(), MSG_PEEK);
-  ENVOY_LOG(trace, "tls inspector: recv: {}", result.rc_);
+  ENVOY_LOG(trace, "tls inspector: recv: {}", result.return_value_);
 
   if (!result.ok()) {
     if (result.err_->getErrorCode() == Api::IoError::IoErrorCode::Again) {
@@ -179,12 +182,17 @@ ParseState Filter::onRead() {
     return ParseState::Error;
   }
 
+  if (result.return_value_ == 0) {
+    config_->stats().connection_closed_.inc();
+    return ParseState::Error;
+  }
+
   // Because we're doing a MSG_PEEK, data we've seen before gets returned every time, so
   // skip over what we've already processed.
-  if (static_cast<uint64_t>(result.rc_) > read_) {
+  if (static_cast<uint64_t>(result.return_value_) > read_) {
     const uint8_t* data = buf_ + read_;
-    const size_t len = result.rc_ - read_;
-    read_ = result.rc_;
+    const size_t len = result.return_value_ - read_;
+    read_ = result.return_value_;
     return parseClientHello(data, len);
   }
   return ParseState::Continue;
@@ -192,7 +200,7 @@ ParseState Filter::onRead() {
 
 void Filter::done(bool success) {
   ENVOY_LOG(trace, "tls inspector: done: {}", success);
-  file_event_.reset();
+  cb_->socket().ioHandle().resetFileEvents();
   cb_->continueFilterChain(success);
 }
 
@@ -228,14 +236,146 @@ ParseState Filter::parseClientHello(const void* data, size_t len) {
       } else {
         config_->stats().alpn_not_found_.inc();
       }
-      cb_->socket().setDetectedTransportProtocol(
-          TransportSockets::TransportProtocolNames::get().Tls);
+      cb_->socket().setDetectedTransportProtocol("tls");
     } else {
       config_->stats().tls_not_found_.inc();
     }
     return ParseState::Done;
   default:
     return ParseState::Error;
+  }
+}
+
+// Google GREASE values (https://datatracker.ietf.org/doc/html/rfc8701)
+static constexpr std::array<uint16_t, 16> GREASE = {
+    0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a,
+    0x8a8a, 0x9a9a, 0xaaaa, 0xbaba, 0xcaca, 0xdada, 0xeaea, 0xfafa,
+};
+
+bool isNotGrease(uint16_t id) {
+  for (size_t grease_id : GREASE) {
+    if (id == grease_id) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void writeCipherSuites(const SSL_CLIENT_HELLO* ssl_client_hello, std::string& fingerprint) {
+  CBS cipher_suites;
+  CBS_init(&cipher_suites, ssl_client_hello->cipher_suites, ssl_client_hello->cipher_suites_len);
+
+  bool write_cipher = true;
+  bool first = true;
+  while (write_cipher && CBS_len(&cipher_suites) > 0) {
+    uint16_t id;
+    write_cipher = CBS_get_u16(&cipher_suites, &id);
+    if (write_cipher && isNotGrease(id)) {
+      if (!first) {
+        absl::StrAppend(&fingerprint, "-");
+      }
+      absl::StrAppendFormat(&fingerprint, "%d", id);
+      first = false;
+    }
+  }
+}
+
+void writeExtensions(const SSL_CLIENT_HELLO* ssl_client_hello, std::string& fingerprint) {
+  CBS extensions;
+  CBS_init(&extensions, ssl_client_hello->extensions, ssl_client_hello->extensions_len);
+
+  bool write_extension = true;
+  bool first = true;
+  while (write_extension && CBS_len(&extensions) > 0) {
+    uint16_t id;
+    CBS extension;
+
+    write_extension =
+        (CBS_get_u16(&extensions, &id) && CBS_get_u16_length_prefixed(&extensions, &extension));
+    if (write_extension && isNotGrease(id)) {
+      if (!first) {
+        absl::StrAppend(&fingerprint, "-");
+      }
+      absl::StrAppendFormat(&fingerprint, "%d", id);
+      first = false;
+    }
+  }
+}
+
+void writeEllipticCurves(const SSL_CLIENT_HELLO* ssl_client_hello, std::string& fingerprint) {
+  const uint8_t* ec_data;
+  size_t ec_len;
+  if (SSL_early_callback_ctx_extension_get(ssl_client_hello, TLSEXT_TYPE_supported_groups, &ec_data,
+                                           &ec_len)) {
+    CBS ec;
+    CBS_init(&ec, ec_data, ec_len);
+
+    // skip list length
+    uint16_t id;
+    bool write_elliptic_curve = CBS_get_u16(&ec, &id);
+
+    bool first = true;
+    while (write_elliptic_curve && CBS_len(&ec) > 0) {
+      write_elliptic_curve = CBS_get_u16(&ec, &id);
+      if (write_elliptic_curve) {
+        if (!first) {
+          absl::StrAppend(&fingerprint, "-");
+        }
+        absl::StrAppendFormat(&fingerprint, "%d", id);
+        first = false;
+      }
+    }
+  }
+}
+
+void writeEllipticCurvePointFormats(const SSL_CLIENT_HELLO* ssl_client_hello,
+                                    std::string& fingerprint) {
+  const uint8_t* ecpf_data;
+  size_t ecpf_len;
+  if (SSL_early_callback_ctx_extension_get(ssl_client_hello, TLSEXT_TYPE_ec_point_formats,
+                                           &ecpf_data, &ecpf_len)) {
+    CBS ecpf;
+    CBS_init(&ecpf, ecpf_data, ecpf_len);
+
+    // skip list length
+    uint8_t id;
+    bool write_point_format = CBS_get_u8(&ecpf, &id);
+
+    bool first = true;
+    while (write_point_format && CBS_len(&ecpf) > 0) {
+      write_point_format = CBS_get_u8(&ecpf, &id);
+      if (write_point_format) {
+        if (!first) {
+          absl::StrAppend(&fingerprint, "-");
+        }
+        absl::StrAppendFormat(&fingerprint, "%d", id);
+        first = false;
+      }
+    }
+  }
+}
+
+void Filter::createJA3Hash(const SSL_CLIENT_HELLO* ssl_client_hello) {
+  if (config_->enableJA3Fingerprinting()) {
+    std::string fingerprint;
+    const uint16_t client_version = ssl_client_hello->version;
+    absl::StrAppendFormat(&fingerprint, "%d,", client_version);
+    writeCipherSuites(ssl_client_hello, fingerprint);
+    absl::StrAppend(&fingerprint, ",");
+    writeExtensions(ssl_client_hello, fingerprint);
+    absl::StrAppend(&fingerprint, ",");
+    writeEllipticCurves(ssl_client_hello, fingerprint);
+    absl::StrAppend(&fingerprint, ",");
+    writeEllipticCurvePointFormats(ssl_client_hello, fingerprint);
+
+    ENVOY_LOG(trace, "tls:createJA3Hash(), fingerprint: {}", fingerprint);
+
+    uint8_t buf[MD5_DIGEST_LENGTH];
+    MD5(reinterpret_cast<const uint8_t*>(fingerprint.data()), fingerprint.size(), buf);
+    std::string md5 = Envoy::Hex::encode(buf, MD5_DIGEST_LENGTH);
+    ENVOY_LOG(trace, "tls:createJA3Hash(), hash: {}", md5);
+
+    cb_->socket().setJA3Hash(md5);
   }
 }
 

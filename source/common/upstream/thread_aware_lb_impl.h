@@ -1,9 +1,16 @@
 #pragma once
 
+#include <bitset>
+
+#include "envoy/common/callback.h"
 #include "envoy/config/cluster/v3/cluster.pb.h"
 
-#include "common/upstream/load_balancer_impl.h"
+#include "source/common/common/logger.h"
+#include "source/common/config/metadata.h"
+#include "source/common/config/well_known_names.h"
+#include "source/common/upstream/load_balancer_impl.h"
 
+#include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 
 namespace Envoy {
@@ -26,6 +33,19 @@ public:
   public:
     virtual ~HashingLoadBalancer() = default;
     virtual HostConstSharedPtr chooseHost(uint64_t hash, uint32_t attempt) const PURE;
+    const absl::string_view hashKey(HostConstSharedPtr host, bool use_hostname) {
+      const ProtobufWkt::Value& val = Config::Metadata::metadataValue(
+          host->metadata().get(), Config::MetadataFilters::get().ENVOY_LB,
+          Config::MetadataEnvoyLbKeys::get().HASH_KEY);
+      if (val.kind_case() != val.kStringValue && val.kind_case() != val.KIND_NOT_SET) {
+        FANCY_LOG(debug, "hash_key must be string type, got: {}", val.kind_case());
+      }
+      absl::string_view hash_key = val.string_value();
+      if (hash_key.empty()) {
+        hash_key = use_hostname ? host->hostname() : host->address()->asString();
+      }
+      return hash_key;
+    }
   };
   using HashingLoadBalancerSharedPtr = std::shared_ptr<HashingLoadBalancer>;
 
@@ -69,12 +89,21 @@ public:
   LoadBalancerFactorySharedPtr factory() override { return factory_; }
   void initialize() override;
 
-  // Upstream::LoadBalancerBase
-  HostConstSharedPtr chooseHostOnce(LoadBalancerContext*) override {
-    NOT_IMPLEMENTED_GCOVR_EXCL_LINE;
-  }
-  // Prefetch not implemented for hash based load balancing
+  // Upstream::LoadBalancer
+  HostConstSharedPtr chooseHost(LoadBalancerContext*) override { return nullptr; }
+  // Preconnect not implemented for hash based load balancing
   HostConstSharedPtr peekAnotherHost(LoadBalancerContext*) override { return nullptr; }
+  // Pool selection not implemented.
+  absl::optional<Upstream::SelectedPoolAndConnection>
+  selectExistingConnection(Upstream::LoadBalancerContext* /*context*/,
+                           const Upstream::Host& /*host*/,
+                           std::vector<uint8_t>& /*hash_key*/) override {
+    return absl::nullopt;
+  }
+  // Lifetime tracking not implemented.
+  OptRef<Envoy::Http::ConnectionPool::ConnectionLifetimeCallbacks> lifetimeCallbacks() override {
+    return {};
+  }
 
 protected:
   ThreadAwareLoadBalancerBase(
@@ -82,7 +111,7 @@ protected:
       Random::RandomGenerator& random,
       const envoy::config::cluster::v3::Cluster::CommonLbConfig& common_config)
       : LoadBalancerBase(priority_set, stats, runtime, random, common_config),
-        factory_(new LoadBalancerFactoryImpl(stats, random)) {}
+        factory_(new LoadBalancerFactoryImpl(stats, random, override_host_status_)) {}
 
 private:
   struct PerPriorityState {
@@ -97,30 +126,55 @@ private:
 
     // Upstream::LoadBalancer
     HostConstSharedPtr chooseHost(LoadBalancerContext* context) override;
-    // Prefetch not implemented for hash based load balancing
+    // Preconnect not implemented for hash based load balancing
     HostConstSharedPtr peekAnotherHost(LoadBalancerContext*) override { return nullptr; }
+    absl::optional<Upstream::SelectedPoolAndConnection>
+    selectExistingConnection(Upstream::LoadBalancerContext* /*context*/,
+                             const Upstream::Host& /*host*/,
+                             std::vector<uint8_t>& /*hash_key*/) override {
+      return absl::nullopt;
+    }
+    OptRef<Envoy::Http::ConnectionPool::ConnectionLifetimeCallbacks> lifetimeCallbacks() override {
+      return {};
+    }
 
     ClusterStats& stats_;
     Random::RandomGenerator& random_;
+    HostStatusSet override_host_status_{};
     std::shared_ptr<std::vector<PerPriorityStatePtr>> per_priority_state_;
     std::shared_ptr<HealthyLoad> healthy_per_priority_load_;
     std::shared_ptr<DegradedLoad> degraded_per_priority_load_;
+
+    // Cross priority host map.
+    HostMapConstSharedPtr cross_priority_host_map_;
   };
 
   struct LoadBalancerFactoryImpl : public LoadBalancerFactory {
-    LoadBalancerFactoryImpl(ClusterStats& stats, Random::RandomGenerator& random)
-        : stats_(stats), random_(random) {}
+    LoadBalancerFactoryImpl(ClusterStats& stats, Random::RandomGenerator& random,
+                            HostStatusSet status)
+        : stats_(stats), random_(random), override_host_status_(status) {}
 
     // Upstream::LoadBalancerFactory
     LoadBalancerPtr create() override;
 
     ClusterStats& stats_;
     Random::RandomGenerator& random_;
+    HostStatusSet override_host_status_{};
     absl::Mutex mutex_;
     std::shared_ptr<std::vector<PerPriorityStatePtr>> per_priority_state_ ABSL_GUARDED_BY(mutex_);
     // This is split out of PerPriorityState so LoadBalancerBase::ChoosePriority can be reused.
     std::shared_ptr<HealthyLoad> healthy_per_priority_load_ ABSL_GUARDED_BY(mutex_);
     std::shared_ptr<DegradedLoad> degraded_per_priority_load_ ABSL_GUARDED_BY(mutex_);
+
+    // Whenever the membership changes, the cross_priority_host_map_ will be updated automatically.
+    // And all workers will create a new worker local load balancer and copy the
+    // cross_priority_host_map_.
+    // This leads to the possibility of simultaneous reading and writing of cross_priority_host_map_
+    // in different threads. For this reason, mutex is necessary to guard cross_priority_host_map_.
+    //
+    // Cross priority host map for fast cross priority host searching. When the priority update
+    // callback is executed, the host map will also be updated.
+    HostMapConstSharedPtr cross_priority_host_map_ ABSL_GUARDED_BY(mutex_);
   };
 
   virtual HashingLoadBalancerSharedPtr
@@ -129,6 +183,7 @@ private:
   void refresh();
 
   std::shared_ptr<LoadBalancerFactoryImpl> factory_;
+  Common::CallbackHandlePtr priority_update_cb_;
 };
 
 } // namespace Upstream

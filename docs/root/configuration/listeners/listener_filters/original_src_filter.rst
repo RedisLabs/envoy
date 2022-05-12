@@ -10,6 +10,14 @@ The original source listener filter replicates the downstream remote address of 
 the upstream side of Envoy. For example, if a downstream connection connects to Envoy with IP
 address ``10.1.2.3``, then Envoy will connect to the upstream with source IP ``10.1.2.3``.
 
+.. note::
+
+ This filter is not supported on Windows.
+
+.. note::
+
+ The CAP_NET_ADMIN capability is required on Linux.
+
 Interaction with Proxy Protocol
 --------------------------------
 

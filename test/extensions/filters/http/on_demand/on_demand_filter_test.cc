@@ -1,8 +1,7 @@
 #include <memory>
 
-#include "common/http/header_map_impl.h"
-
-#include "extensions/filters/http/on_demand/on_demand_update.h"
+#include "source/common/http/header_map_impl.h"
+#include "source/extensions/filters/http/on_demand/on_demand_update.h"
 
 #include "test/mocks/http/mocks.h"
 #include "test/mocks/runtime/mocks.h"
@@ -91,14 +90,14 @@ TEST_F(OnDemandFilterTest, TestOnRouteConfigUpdateCompletionContinuesDecodingWit
 TEST_F(OnDemandFilterTest, OnRouteConfigUpdateCompletionContinuesDecodingIfRedirectFails) {
   EXPECT_CALL(decoder_callbacks_, continueDecoding());
   EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillOnce(Return(nullptr));
-  EXPECT_CALL(decoder_callbacks_, recreateStream()).WillOnce(Return(false));
+  EXPECT_CALL(decoder_callbacks_, recreateStream(_)).WillOnce(Return(false));
   filter_->onRouteConfigUpdateCompletion(true);
 }
 
 // tests onRouteConfigUpdateCompletion() when route was resolved
 TEST_F(OnDemandFilterTest, OnRouteConfigUpdateCompletionRestartsActiveStream) {
   EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillOnce(Return(nullptr));
-  EXPECT_CALL(decoder_callbacks_, recreateStream()).WillOnce(Return(true));
+  EXPECT_CALL(decoder_callbacks_, recreateStream(_)).WillOnce(Return(true));
   filter_->onRouteConfigUpdateCompletion(true);
 }
 

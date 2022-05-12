@@ -8,7 +8,7 @@
 #include "envoy/stats/scope.h"
 #include "envoy/stats/stats_macros.h"
 
-#include "common/common/logger.h"
+#include "source/common/common/logger.h"
 
 #include "absl/container/flat_hash_set.h"
 
@@ -82,7 +82,6 @@ private:
 
   ConfigSharedPtr config_;
   Network::ListenerFilterCallbacks* cb_{nullptr};
-  Event::FileEventPtr file_event_;
   absl::string_view protocol_;
   http_parser parser_;
   static http_parser_settings settings_;

@@ -5,13 +5,12 @@
 #include "envoy/service/health/v3/hds.pb.h"
 #include "envoy/type/v3/http.pb.h"
 
-#include "common/protobuf/protobuf.h"
-#include "common/singleton/manager_impl.h"
-#include "common/upstream/health_discovery_service.h"
-#include "common/upstream/transport_socket_match_impl.h"
-
-#include "extensions/transport_sockets/raw_buffer/config.h"
-#include "extensions/transport_sockets/tls/context_manager_impl.h"
+#include "source/common/protobuf/protobuf.h"
+#include "source/common/singleton/manager_impl.h"
+#include "source/common/upstream/health_discovery_service.h"
+#include "source/common/upstream/transport_socket_match_impl.h"
+#include "source/extensions/transport_sockets/raw_buffer/config.h"
+#include "source/extensions/transport_sockets/tls/context_manager_impl.h"
 
 #include "test/mocks/access_log/mocks.h"
 #include "test/mocks/event/mocks.h"
@@ -94,10 +93,9 @@ protected:
         .WillRepeatedly(testing::ReturnNew<NiceMock<Event::MockTimer>>());
 
     hds_delegate_ = std::make_unique<HdsDelegate>(
-        stats_store_, Grpc::RawAsyncClientPtr(async_client_),
-        envoy::config::core::v3::ApiVersion::AUTO, dispatcher_, runtime_, stats_store_,
+        stats_store_, Grpc::RawAsyncClientPtr(async_client_), dispatcher_, runtime_, stats_store_,
         ssl_context_manager_, test_factory_, log_manager_, cm_, local_info_, admin_,
-        singleton_manager_, tls_, validation_visitor_, *api_);
+        singleton_manager_, tls_, validation_visitor_, *api_, options_);
   }
 
   void expectCreateClientConnection() {
@@ -213,6 +211,8 @@ transport_socket_matches:
     %s: "true"
   transport_socket:
     name: "envoy.transport_sockets.raw_buffer"
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer
 )EOF",
         match);
     cluster_health_check->MergeFrom(
@@ -259,6 +259,8 @@ transport_socket_match_criteria:
   NiceMock<Server::MockAdmin> admin_;
   Singleton::ManagerImpl singleton_manager_{Thread::threadFactoryForTest()};
   NiceMock<ThreadLocal::MockInstance> tls_;
+  Server::MockOptions options_;
+  NiceMock<AccessLog::MockAccessLogManager> access_log_manager_;
 };
 
 // Test that HdsDelegate builds and sends initial message correctly
@@ -312,6 +314,36 @@ TEST_F(HdsTest, TestProcessMessageEndpoints) {
       EXPECT_EQ(host->address()->ip()->port(), 1234 + j);
     }
   }
+}
+
+TEST_F(HdsTest, TestHdsCluster) {
+  EXPECT_CALL(*async_client_, startRaw(_, _, _, _)).WillOnce(Return(&async_stream_));
+  EXPECT_CALL(async_stream_, sendMessageRaw_(_, _));
+  createHdsDelegate();
+
+  message = std::make_unique<envoy::service::health::v3::HealthCheckSpecifier>();
+  message->mutable_interval()->set_seconds(1);
+
+  auto* health_check = message->add_cluster_health_checks();
+  health_check->set_cluster_name("test_cluster");
+  auto* address = health_check->add_locality_endpoints()->add_endpoints()->mutable_address();
+  address->mutable_socket_address()->set_address("127.0.0.2");
+  address->mutable_socket_address()->set_port_value(1234);
+
+  // Process message
+  EXPECT_CALL(test_factory_, createClusterInfo(_)).WillOnce(Return(cluster_info_));
+  hds_delegate_friend_.processPrivateMessage(*hds_delegate_, std::move(message));
+
+  EXPECT_EQ(hds_delegate_->hdsClusters()[0]->initializePhase(),
+            Upstream::Cluster::InitializePhase::Primary);
+
+  // HdsCluster uses health_checkers_ instead.
+  EXPECT_TRUE(hds_delegate_->hdsClusters()[0]->healthChecker() == nullptr);
+
+  // outlier detector is always null for HdsCluster.
+  EXPECT_TRUE(hds_delegate_->hdsClusters()[0]->outlierDetector() == nullptr);
+  const auto* hds_cluster = hds_delegate_->hdsClusters()[0].get();
+  EXPECT_TRUE(hds_cluster->outlierDetector() == nullptr);
 }
 
 // Test if processMessage processes health checks from a HealthCheckSpecifier
@@ -554,7 +586,7 @@ TEST_F(HdsTest, TestSocketContext) {
         Envoy::Server::Configuration::TransportSocketFactoryContextImpl factory_context(
             params.admin_, params.ssl_context_manager_, *scope, params.cm_, params.local_info_,
             params.dispatcher_, params.stats_, params.singleton_manager_, params.tls_,
-            params.validation_visitor_, params.api_);
+            params.validation_visitor_, params.api_, params.options_, params.access_log_manager_);
 
         // Create a mock socket_factory for the scope of this unit test.
         std::unique_ptr<Envoy::Network::TransportSocketFactory> socket_factory =
@@ -1006,7 +1038,7 @@ TEST_F(HdsTest, TestUpdateSocketContext) {
         Envoy::Server::Configuration::TransportSocketFactoryContextImpl factory_context(
             params.admin_, params.ssl_context_manager_, *scope, params.cm_, params.local_info_,
             params.dispatcher_, params.stats_, params.singleton_manager_, params.tls_,
-            params.validation_visitor_, params.api_);
+            params.validation_visitor_, params.api_, params.options_, params.access_log_manager_);
 
         // Create a mock socket_factory for the scope of this unit test.
         std::unique_ptr<Envoy::Network::TransportSocketFactory> socket_factory =
@@ -1093,6 +1125,90 @@ TEST_F(HdsTest, TestUpdateSocketContext) {
       socket_matchers[1]->resolve(third_health_checker_base->transportSocketMatchMetadata().get());
   // Since this again does not match, it uses default.
   EXPECT_EQ(third_match.name_, "default");
+}
+
+TEST_F(HdsTest, TestCustomHealthCheckPortWhenCreate) {
+  EXPECT_CALL(*async_client_, startRaw(_, _, _, _)).WillOnce(Return(&async_stream_));
+  EXPECT_CALL(async_stream_, sendMessageRaw_(_, _));
+  createHdsDelegate();
+
+  // Create Message
+  // - Cluster "anna" with 3 lb_endpoints
+  message = std::make_unique<envoy::service::health::v3::HealthCheckSpecifier>();
+  message->mutable_interval()->set_seconds(1);
+
+  auto* health_check = message->add_cluster_health_checks();
+  health_check->set_cluster_name("anna");
+  for (int i = 0; i < 3; i++) {
+    auto* endpoint = health_check->add_locality_endpoints()->add_endpoints();
+    endpoint->mutable_health_check_config()->set_port_value(4321 + i);
+    auto* address = endpoint->mutable_address();
+    address->mutable_socket_address()->set_address("127.0.0.1");
+    address->mutable_socket_address()->set_port_value(1234 + i);
+  }
+
+  // Process message
+  EXPECT_CALL(test_factory_, createClusterInfo(_)).WillOnce(Return(cluster_info_));
+  hds_delegate_friend_.processPrivateMessage(*hds_delegate_, std::move(message));
+
+  // Check Correctness
+  for (int i = 0; i < 3; i++) {
+    auto& host =
+        hds_delegate_->hdsClusters()[0]->prioritySet().hostSetsPerPriority()[0]->hosts()[i];
+    EXPECT_EQ(host->address()->ip()->port(), 1234 + i);
+    EXPECT_EQ(host->healthCheckAddress()->ip()->port(), 4321 + i);
+  }
+}
+
+TEST_F(HdsTest, TestCustomHealthCheckPortWhenUpdate) {
+  EXPECT_CALL(*async_client_, startRaw(_, _, _, _)).WillOnce(Return(&async_stream_));
+  EXPECT_CALL(async_stream_, sendMessageRaw_(_, _));
+  createHdsDelegate();
+
+  // Create Message
+  // - Cluster "anna" with 1 lb_endpoints with 3 endpoints
+  message = std::make_unique<envoy::service::health::v3::HealthCheckSpecifier>();
+  message->mutable_interval()->set_seconds(1);
+
+  auto* health_check = message->add_cluster_health_checks();
+  health_check->set_cluster_name("anna");
+  auto* lb_endpoint = health_check->add_locality_endpoints();
+  for (int i = 0; i < 3; i++) {
+    auto* endpoint = lb_endpoint->add_endpoints();
+    auto* address = endpoint->mutable_address();
+    address->mutable_socket_address()->set_address("127.0.0.1");
+    address->mutable_socket_address()->set_port_value(1234 + i);
+  }
+
+  // Process message
+  EXPECT_CALL(test_factory_, createClusterInfo(_)).WillOnce(Return(cluster_info_));
+  hds_delegate_friend_.processPrivateMessage(*hds_delegate_, std::move(message));
+
+  for (int i = 0; i < 3; i++) {
+    auto& host =
+        hds_delegate_->hdsClusters()[0]->prioritySet().hostSetsPerPriority()[0]->hosts()[i];
+    EXPECT_EQ(host->address()->ip()->port(), 1234 + i);
+    EXPECT_EQ(host->healthCheckAddress()->ip()->port(), 1234 + i);
+  }
+
+  // Set custom health config port
+  for (int i = 0; i < 3; i++) {
+    auto* endpoint =
+        message->mutable_cluster_health_checks(0)->mutable_locality_endpoints(0)->mutable_endpoints(
+            i);
+    endpoint->mutable_health_check_config()->set_port_value(4321 + i);
+  }
+
+  // Process updating message
+  hds_delegate_friend_.processPrivateMessage(*hds_delegate_, std::move(message));
+
+  // Check Correctness
+  for (int i = 0; i < 3; i++) {
+    auto& host =
+        hds_delegate_->hdsClusters()[0]->prioritySet().hostSetsPerPriority()[0]->hosts()[i];
+    EXPECT_EQ(host->address()->ip()->port(), 1234 + i);
+    EXPECT_EQ(host->healthCheckAddress()->ip()->port(), 4321 + i);
+  }
 }
 
 } // namespace Upstream
