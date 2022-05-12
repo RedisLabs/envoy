@@ -1274,14 +1274,15 @@ envoy.transport_sockets.tap:
   status: alpha
   type_urls:
   - envoy.extensions.transport_sockets.tap.v3.Tap
-envoy.transport_sockets.tcp_stats:
-  categories:
-  - envoy.transport_sockets.downstream
-  - envoy.transport_sockets.upstream
-  security_posture: robust_to_untrusted_downstream_and_upstream
-  status: alpha
-  type_urls:
-  - envoy.extensions.transport_sockets.tcp_stats.v3.Config
+# tcp_stats cannot be compiled in rhel7 due to old linux headers (tcp.h).
+# envoy.transport_sockets.tcp_stats:
+#   categories:
+#   - envoy.transport_sockets.downstream
+#   - envoy.transport_sockets.upstream
+#   security_posture: robust_to_untrusted_downstream_and_upstream
+#   status: alpha
+#   type_urls:
+#   - envoy.extensions.transport_sockets.tcp_stats.v3.Config
 envoy.transport_sockets.tls:
   categories:
   - envoy.transport_sockets.downstream
