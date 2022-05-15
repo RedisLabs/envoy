@@ -269,6 +269,10 @@ envoy_cmake(
         "//bazel:windows_x86_64": ["libcurl.lib"],
         "//conditions:default": ["libcurl.a"],
     }),
+    env = {
+        "CXXFLAGS": "-fPIC",
+	"CFLAGS": "-fPIC",
+    },
     deps = [
         ":ares",
         ":nghttp2",
