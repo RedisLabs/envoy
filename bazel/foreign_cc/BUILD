@@ -269,6 +269,10 @@ envoy_cmake(
         "//bazel:windows_x86_64": ["libcurl.lib"],
         "//conditions:default": ["libcurl.a"],
     }),
+    env = {
+        "CXXFLAGS": "-fPIC",
+	"CFLAGS": "-fPIC",
+    },
     deps = [
         ":ares",
         ":nghttp2",
@@ -553,6 +557,7 @@ envoy_cmake(
     build_data = ["@com_github_facebook_zstd//:all"],
     cache_entries = {
         "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INSTALL_LIBDIR": "lib",
         "ZSTD_BUILD_SHARED": "off",
         "ZSTD_BUILD_STATIC": "on",
     },
