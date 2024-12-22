@@ -920,7 +920,7 @@ REPOSITORY_LOCATIONS_SPEC = dict(
         # Static snapshot of https://quiche.googlesource.com/googleurl/+archive/9cdb1f4d1a365ebdbcbf179dadf7f8aa5ee802e7.tar.gz.
         version = "9cdb1f4d1a365ebdbcbf179dadf7f8aa5ee802e7",
         sha256 = "a1bc96169d34dcc1406ffb750deef3bc8718bd1f9069a2878838e1bd905de989",
-        urls = ["https://storage.googleapis.com/quiche-envoy-integration/googleurl_{version}.tar.gz"],
+        urls = ["https://storage.googleapis.com/quiche-envoy-integration/googleurl-{version}.tar.gz"],
         use_category = ["controlplane", "dataplane_core"],
         extensions = [],
         release_date = "2022-04-04",
