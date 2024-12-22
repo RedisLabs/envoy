@@ -679,7 +679,8 @@ public:
     const char* spaces = spacesForLevel(indent_level);
     os << spaces << "FilterManager " << this << DUMP_MEMBER(state_.has_1xx_headers_) << "\n";
 
-    DUMP_DETAILS(filter_manager_callbacks_.requestHeaders());
+    // Disabled to avoid dumping sensitive information (such as AUTHORIZATION header)
+    // DUMP_DETAILS(filter_manager_callbacks_.requestHeaders());
     DUMP_DETAILS(filter_manager_callbacks_.requestTrailers());
     DUMP_DETAILS(filter_manager_callbacks_.responseHeaders());
     DUMP_DETAILS(filter_manager_callbacks_.responseTrailers());
