@@ -702,7 +702,8 @@ public:
        << DUMP_MEMBER(state_.observed_decode_end_stream_)
        << DUMP_MEMBER(state_.observed_encode_end_stream_) << "\n";
 
-    DUMP_DETAILS(filter_manager_callbacks_.requestHeaders());
+    // Disabled to avoid dumping sensitive information (such as AUTHORIZATION header)
+    // DUMP_DETAILS(filter_manager_callbacks_.requestHeaders());
     DUMP_DETAILS(filter_manager_callbacks_.requestTrailers());
     DUMP_DETAILS(filter_manager_callbacks_.responseHeaders());
     DUMP_DETAILS(filter_manager_callbacks_.responseTrailers());
