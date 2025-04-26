@@ -86,10 +86,10 @@ struct StatsParams {
       return false;
     }
 
-    if (re2_filter_ != nullptr && !re2::RE2::PartialMatch(metric.name(), *re2_filter_)) {
+    if (re2_filter_ != NULL && !re2::RE2::PartialMatch(metric.name(), *re2_filter_)) {
       return false;
     }
-
+    
     return true;
   }
 
